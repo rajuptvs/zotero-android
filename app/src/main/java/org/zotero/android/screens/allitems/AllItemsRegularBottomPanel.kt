@@ -6,6 +6,9 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.FlexibleBottomAppBar
 import androidx.compose.material3.Icon
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
@@ -102,6 +105,22 @@ internal fun AllItemsRegularBottomPanel(
                         tint = MaterialTheme.colorScheme.onSecondaryContainer,
                     )
                 }
+            }
+
+            IconButton(onClick = viewModel::toggleAiPanel) {
+                Icon(
+                    imageVector = if (viewState.showAiPanel) {
+                        Icons.Filled.AutoAwesome
+                    } else {
+                        Icons.Outlined.AutoAwesome
+                    },
+                    contentDescription = safeStringResource(Strings.reader_chat_library_title),
+                    tint = if (viewState.showAiPanel) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    },
+                )
             }
 
             TooltipBox(

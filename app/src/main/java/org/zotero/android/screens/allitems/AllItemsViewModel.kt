@@ -97,6 +97,7 @@ import org.zotero.android.sync.CollectionIdentifier
 import org.zotero.android.sync.CollectionIdentifier.CustomType
 import org.zotero.android.sync.KeyGenerator
 import org.zotero.android.sync.Libraries
+import org.zotero.android.database.objects.RCustomLibraryType
 import org.zotero.android.sync.Library
 import org.zotero.android.sync.LibraryIdentifier
 import org.zotero.android.sync.Note
@@ -373,6 +374,35 @@ internal class AllItemsViewModel @Inject constructor(
 
     override fun currentFilters(): List<ItemsFilter> {
         return viewState.filters
+    }
+
+    fun toggleAiPanel() {
+        updateState { copy(showAiPanel = !showAiPanel) }
+    }
+
+    /** Where the user is in the library, for the AI panel's context. */
+    fun aiChatContext(): org.zotero.android.ai.ui.LibraryChatContext {
+        // Library chats are about My Library, the only library the tools reach (ai/spec/tools.md).
+        if (library.identifier != LibraryIdentifier.custom(RCustomLibraryType.myLibrary)) {
+            return org.zotero.android.ai.ui.LibraryChatContext(
+                library = Library(
+                    identifier = LibraryIdentifier.custom(RCustomLibraryType.myLibrary),
+                    name = "My Library",
+                    metadataEditable = true,
+                    filesEditable = true,
+                ),
+                collectionName = org.zotero.android.ai.ui.LibraryChatContext.groupView,
+                collectionKey = null,
+                selectedKeys = emptyList(),
+            )
+        }
+        val identifier = collection.identifier
+        return org.zotero.android.ai.ui.LibraryChatContext(
+            library = library,
+            collectionName = collection.name.ifBlank { null },
+            collectionKey = (identifier as? CollectionIdentifier.collection)?.key,
+            selectedKeys = viewState.selectedKeys?.toList().orEmpty(),
+        )
     }
 
     override fun isEditing(): Boolean {
@@ -1426,6 +1456,7 @@ internal data class AllItemsViewState(
     val isGeneratingCitation: Boolean = false,
     val appUpdateBannerPayload: String = "",
     val shouldShowAppUpdateBanner: Boolean = false,
+    val showAiPanel: Boolean = false,
 ) : ViewState {
     val tagsFilter: Set<String>?
         get() {

@@ -36,4 +36,11 @@
     <string name="reader_chat_reasoning">Reasoning effort</string>
     <string name="reader_chat_capture_hint">Drag over a figure or passage to send it</string>
     <string name="reader_chat_images_unsupported">This model can\'t read images</string>
+    <string name="reader_chat_library_title">Ask AI · Library</string>
+    <string name="reader_chat_library_empty">Ask about your library: find papers, summarize a collection, or organize items. You approve every change before it\'s made.</string>
+    <string name="reader_chat_library_input_hint">Ask about your library</string>
+    <string name="reader_chat_approval_title">Allow this change?</string>
+    <string name="reader_chat_approve">Approve</string>
+    <string name="reader_chat_decline">Decline</string>
+    <string name="reader_chat_auto_approve">Approve changes automatically</string>
 </resources>

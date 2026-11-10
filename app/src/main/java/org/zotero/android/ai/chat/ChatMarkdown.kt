@@ -2,7 +2,10 @@ package org.zotero.android.ai.chat
 
 import org.commonmark.ext.gfm.strikethrough.StrikethroughExtension
 import org.commonmark.ext.gfm.tables.TablesExtension
+import org.commonmark.node.Image
+import org.commonmark.node.Node
 import org.commonmark.parser.Parser
+import org.commonmark.renderer.NodeRenderer
 import org.commonmark.renderer.html.HtmlRenderer
 
 /** Turns an assistant answer (Markdown) into HTML the Zotero note editor keeps. */
@@ -13,9 +16,57 @@ object ChatMarkdown {
         .extensions(extensions)
         .escapeHtml(true)
         .sanitizeUrls(true)
+        // Images become their alt text: a note shouldn't load a URL chosen by the model.
+        .nodeRendererFactory { context ->
+            object : NodeRenderer {
+                override fun getNodeTypes(): Set<Class<out Node>> = setOf(Image::class.java)
+                override fun render(node: Node) {
+                    var child = node.firstChild
+                    while (child != null) {
+                        context.render(child)
+                        child = child.next
+                    }
+                }
+            }
+        }
         .build()
 
-    fun toHtml(markdown: String): String = renderer.render(parser.parse(markdown))
+    /**
+     * Math becomes Zotero's own math markup (typeset by the note editor on every platform). It's
+     * set aside before Markdown parsing so `_`, `*` and `\` inside it survive (ai/spec/chat.md).
+     */
+    fun toHtml(markdown: String): String {
+        val math = mutableListOf<Pair<String, Boolean>>()
+        val protected = mathOrCode.replace(markdown) { m ->
+            val display = m.groups[2] ?: m.groups[3]
+            val inline = m.groups[4] ?: m.groups[5]
+            when {
+                display != null -> placeholder(math, display.value.trim(), true)
+                inline != null -> placeholder(math, inline.value.trim(), false)
+                else -> m.value // code stays as it is
+            }
+        }
+        var html = renderer.render(parser.parse(protected))
+        math.forEachIndexed { index, (tex, display) ->
+            val token = "ZAIMATH${index}Z"
+            html = if (display && html.contains("<p>$token</p>")) {
+                html.replace("<p>$token</p>", "<pre class=\"math\">$$${escape(tex)}$$</pre>")
+            } else {
+                html.replace(token, "<span class=\"math\">$${escape(tex)}$</span>")
+            }
+        }
+        return html
+    }
+
+    private fun placeholder(math: MutableList<Pair<String, Boolean>>, tex: String, display: Boolean): String {
+        math.add(tex to display)
+        return "ZAIMATH${math.size - 1}Z"
+    }
+
+    // Code (left alone) | $$…$$ | \[…\] | \(…\) | $…$ (not "$5 and $10").
+    private val mathOrCode = Regex(
+        """(```[\s\S]*?```|`[^`\n]*`)|\$\$([\s\S]+?)\$\$|\\\[([\s\S]+?)\\\]|\\\(([\s\S]+?)\\\)|\$(?!\s)([^$\n]+?)(?<!\s)\$(?!\d)"""
+    )
 
     /**
      * A standalone note for one answer the user wants to keep: a heading from their question,

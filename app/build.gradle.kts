@@ -205,3 +205,12 @@ fun readPspdfkitKey() : String {
         .readLines()
     return "\"${keys[0]}\""
 }
+// The AI assistant's tool definitions and prompts are shared with the desktop plugin; ship the
+// same files (ai/spec) inside the app as assets/ai/spec.
+val aiSpecAssetsDir = layout.buildDirectory.dir("generated/aiSpec").get().asFile
+val copyAiSpec by tasks.registering(Copy::class) {
+    from(rootProject.file("ai/spec"))
+    into(File(aiSpecAssetsDir, "ai/spec"))
+}
+android.sourceSets.getByName("main").assets.srcDir(aiSpecAssetsDir)
+tasks.named("preBuild") { dependsOn(copyAiSpec) }

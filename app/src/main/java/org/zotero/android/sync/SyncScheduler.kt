@@ -76,6 +76,10 @@ class SyncScheduler @Inject constructor(
             .launchIn(coroutineScope)
     }
 
+    /** False until the signed-in user's controllers have started (see UserControllers). */
+    val isInitialized: Boolean
+        get() = this::syncQueue.isInitialized
+
     fun request(type: SyncKind, libraries: Libraries) {
         coroutineScope.launch {
             syncSchedulerSemaphore.withPermit {

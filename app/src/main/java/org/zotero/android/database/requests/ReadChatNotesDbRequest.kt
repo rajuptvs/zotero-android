@@ -50,6 +50,23 @@ class ReadChatNotesDbRequest(
     }
 }
 
+data class NoteHtml(val html: String?)
+
+/** A note's current HTML; null if it's gone (deleted or in the trash). */
+class ReadNoteHtmlDbRequest(
+    val key: String,
+    val libraryId: LibraryIdentifier,
+) : DbResponseRequest<NoteHtml> {
+    override val needsWrite: Boolean
+        get() = false
+
+    override fun process(database: Realm): NoteHtml {
+        val note = database.where<RItem>().key(key, libraryId).findFirst()
+        if (note == null || note.trash || note.deleted) return NoteHtml(null)
+        return NoteHtml(note.fields.where().key(FieldKeys.Item.note).findFirst()?.value ?: "")
+    }
+}
+
 /** Display title of an item, read inside the request so no live Realm object escapes. */
 class ReadItemTitleDbRequest(
     val key: String,
@@ -92,4 +109,28 @@ class ReadChatItemContextDbRequest(
             field(FieldKeys.Item.abstractN)?.let { appendLine("Abstract: $it") }
         }.trim()
     }
+}
+
+/** Library-wide AI conversations: standalone notes marked with the library chat scope. */
+class ReadLibraryChatNotesDbRequest(
+    val libraryId: LibraryIdentifier,
+) : DbResponseRequest<List<ChatNoteSnapshot>> {
+    override val needsWrite: Boolean
+        get() = false
+
+    override fun process(database: Realm): List<ChatNoteSnapshot> =
+        database.where<RItem>().library(libraryId)
+            .equalTo("rawType", ItemTypes.note)
+            .equalTo("trash", false)
+            .equalTo("deleted", false)
+            .isNull("parent")
+            .sort("dateModified", Sort.DESCENDING)
+            .findAll()
+            .map { item ->
+                ChatNoteSnapshot(
+                    key = item.key,
+                    html = item.fields.where().key(FieldKeys.Item.note).findFirst()?.value ?: ""
+                )
+            }
+            .filter { ChatNoteFormat.isLibraryChat(it.html) }
 }

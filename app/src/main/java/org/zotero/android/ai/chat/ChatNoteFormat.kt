@@ -18,7 +18,32 @@ object ChatNoteFormat {
     private const val assistantLabel = "ChatGPT:"
 
     fun isChatNote(title: String, html: String): Boolean =
-        title.startsWith(titleLabel) || attachmentAttribute.containsMatchIn(html)
+        title.startsWith(titleLabel) || attachmentAttribute.containsMatchIn(html) ||
+                html.contains(libraryScopeAttribute)
+
+    /**
+     * The scope attribute is dropped when a note is opened in desktop Zotero's note editor, so the
+     * title heading also marks a library chat (ai/spec/chat.md).
+     */
+    fun isLibraryChat(html: String): Boolean =
+        html.contains(libraryScopeAttribute) || libraryTitle.containsMatchIn(html)
+
+    const val libraryChatTag = "ai-chat"
+    private const val libraryScopeAttribute = "data-zotero-ai-scope=\"library\""
+    private val libraryTitle = Regex("""^\s*(<div[^>]*>)?\s*<h1>\s*AI chat: Library —""")
+
+    /** A library-wide conversation: a standalone note (see ai/spec/chat.md). */
+    fun encodeLibrary(turns: List<ChatTurn>): String {
+        val firstQuestion = turns.firstOrNull { it.role == "user" }?.text
+            ?.lineSequence()?.firstOrNull { it.isNotBlank() }?.trim().orEmpty()
+        val shortQuestion = if (firstQuestion.length > 60) firstQuestion.take(57).trimEnd() + "…" else firstQuestion
+        val html = StringBuilder()
+        html.append("<div data-schema-version=\"9\" $libraryScopeAttribute>")
+        html.append("<h1>").append(escape("$titleLabel Library — $shortQuestion".trim())).append("</h1>\n")
+        appendTurns(html, turns)
+        html.append("</div>")
+        return html.toString()
+    }
 
     /** The attachment this chat was about, if the note still carries it. */
     fun attachmentKey(noteHtml: String): String? =
@@ -30,6 +55,12 @@ object ChatNoteFormat {
         html.append("<div data-schema-version=\"9\" data-zotero-ai-attachment=\"")
             .append(escape(attachmentKey)).append("\">")
         html.append("<h1>").append(escape("$titleLabel $documentTitle".trim())).append("</h1>\n")
+        appendTurns(html, turns)
+        html.append("</div>")
+        return html.toString()
+    }
+
+    private fun appendTurns(html: StringBuilder, turns: List<ChatTurn>) {
         for (turn in turns) {
             val label = if (turn.role == "user") userLabel else assistantLabel
             html.append("<p><strong>").append(label).append("</strong></p>\n")
@@ -41,8 +72,6 @@ object ChatNoteFormat {
                 html.append("<p>").append(escape("[Image: ${image.label}]")).append("</p>\n")
             }
         }
-        html.append("</div>")
-        return html.toString()
     }
 
     fun decode(noteHtml: String): List<ChatTurn> {
@@ -52,7 +81,8 @@ object ChatNoteFormat {
         fun flush() {
             val currentRole = role ?: return
             if (lines.isNotEmpty()) {
-                turns.add(ChatTurn(currentRole, lines.joinToString("\n")))
+                val text = if (currentRole == "assistant") joinMarkdownLines(lines) else lines.joinToString("\n")
+                turns.add(ChatTurn(currentRole, text))
             }
             lines.clear()
         }
@@ -75,6 +105,25 @@ object ChatNoteFormat {
         }
         flush()
         return turns
+    }
+
+    /**
+     * Notes keep one paragraph per line and lose blank lines, so put them back between Markdown
+     * blocks: keep table rows and fenced code together, separate everything else (ai/spec/chat.md).
+     */
+    fun joinMarkdownLines(lines: List<String>): String {
+        val out = StringBuilder()
+        var inFence = false
+        lines.forEachIndexed { index, line ->
+            if (index > 0) {
+                val previous = lines[index - 1]
+                val together = inFence || (previous.startsWith("|") && line.startsWith("|"))
+                out.append(if (together) "\n" else "\n\n")
+            }
+            out.append(line)
+            if (line.startsWith("```")) inFence = !inFence
+        }
+        return out.toString()
     }
 
     private val paragraph = Regex("<p(?:\\s[^>]*)?>(.*?)</p>", RegexOption.DOT_MATCHES_ALL)

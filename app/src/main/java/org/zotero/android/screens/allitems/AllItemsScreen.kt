@@ -1,5 +1,11 @@
 package org.zotero.android.screens.allitems
 
+import org.zotero.android.screens.reader.ReaderAiSplitLayout
+import org.zotero.android.ai.ui.AiChatScope
+import org.zotero.android.ai.ui.AiChatPanel
+import androidx.compose.ui.unit.dp
+import androidx.compose.runtime.remember
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -155,6 +161,19 @@ internal fun AllItemsScreen(
         }
         val scrollBehavior = TopAppBarDefaults.pinnedScrollBehavior()
 
+        val aiChatScope = remember(viewModel) { AiChatScope.Library(viewModel::aiChatContext) }
+        BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+        ReaderAiSplitLayout(
+            showPanel = viewState.showAiPanel,
+            wide = maxWidth >= 600.dp,
+            panel = {
+                AiChatPanel(
+                    scope = aiChatScope,
+                    readerHooks = null,
+                    onClose = viewModel::toggleAiPanel,
+                )
+            },
+            reader = {
         CustomScaffoldM3(
             scrollBehavior = scrollBehavior,
             topBar = {
@@ -224,6 +243,9 @@ internal fun AllItemsScreen(
                     GeneratingCitationLoadingIndicator()
                 }
             }
+        }
+            },
+        )
         }
         val bottomSheetTitle = safeStringResource(id = Strings.item_type)
         AllItemsAddBottomSheet(

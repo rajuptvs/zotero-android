@@ -39,6 +39,13 @@ data class ChatTurn(
     val role: String,
     val text: String,
     val images: List<ChatImage> = emptyList(),
+    /**
+     * Function calls and their outputs that led to this (assistant) answer, resent as context on
+     * later turns of the same session. Not saved in the note.
+     */
+    val trace: List<JsonObject> = emptyList(),
+    /** One line per tool the assistant ran for this answer, for display. Not saved in the note. */
+    val activity: List<String> = emptyList(),
 )
 
 class ChatGptApiException(message: String, val code: String? = null) : Exception(message)
@@ -49,6 +56,9 @@ enum class ChatStreamPhase { Thinking, Writing }
 sealed interface ChatStreamEvent {
     data class Phase(val phase: ChatStreamPhase) : ChatStreamEvent
     data class Text(val delta: String) : ChatStreamEvent
+
+    /** A finished output item (assistant message, function call, reasoning, ...), as returned. */
+    data class ItemDone(val item: JsonObject) : ChatStreamEvent
 }
 
 /**
@@ -129,16 +139,42 @@ class ChatGptResponsesClient @Inject constructor(
         context: String?,
         turns: List<ChatTurn>,
         reasoningEffort: String? = null,
+    ): Flow<ChatStreamEvent> = stream(
+        model = model,
+        instructions = instructions,
+        input = JsonArray().apply {
+            if (context != null) add(textMessage(role = "developer", text = context))
+            turns.forEach { add(message(it)) }
+        },
+        tools = null,
+        reasoningEffort = reasoningEffort,
+    )
+
+    /** Input item for a conversation turn (text, or text plus images for a user turn). */
+    fun inputItem(turn: ChatTurn): JsonObject = message(turn)
+
+    fun developerItem(text: String): JsonObject = textMessage(role = "developer", text = text)
+
+    /**
+     * One model request with a raw `input` array (so callers can include function calls and their
+     * outputs) and optional function tools.
+     */
+    fun stream(
+        model: String,
+        instructions: String,
+        input: JsonArray,
+        tools: JsonArray?,
+        reasoningEffort: String? = null,
     ): Flow<ChatStreamEvent> = flow {
-        val input = JsonArray()
-        if (context != null) {
-            input.add(textMessage(role = "developer", text = context))
-        }
-        turns.forEach { input.add(message(it)) }
         val body = JsonObject().apply {
             addProperty("model", model)
             addProperty("instructions", instructions)
             add("input", input)
+            if (tools != null && tools.size() > 0) {
+                add("tools", tools)
+                addProperty("tool_choice", "auto")
+                addProperty("parallel_tool_calls", true)
+            }
             addProperty("store", false)
             addProperty("stream", true)
             if (reasoningEffort != null) {
@@ -179,6 +215,9 @@ class ChatGptResponsesClient @Inject constructor(
                             }
                             emit(ChatStreamEvent.Text(event.string("delta") ?: ""))
                         }
+
+                        "response.output_item.done" ->
+                            event.obj("item")?.let { emit(ChatStreamEvent.ItemDone(it)) }
 
                         "response.completed" -> completed = true
                         "response.incomplete" -> throw ChatGptApiException(

@@ -6,6 +6,8 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.consumeWindowInsets
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.isImeVisible
@@ -67,7 +69,18 @@ internal fun ReaderAiSplitLayout(
     Layout(
         modifier = Modifier.fillMaxSize().imePadding(),
         contents = listOf(
-            { Box { reader() } },
+            {
+                // Stacked, the top pane no longer reaches the bottom of the screen, so it mustn't
+                // pad itself for the navigation bar (the panel below does).
+                val stacked = showPanel && !wide
+                Box(
+                    modifier = if (stacked) {
+                        Modifier.consumeWindowInsets(WindowInsets.navigationBars)
+                    } else {
+                        Modifier
+                    }
+                ) { reader() }
+            },
             {
                 if (showPanel) {
                     SplitHandle(

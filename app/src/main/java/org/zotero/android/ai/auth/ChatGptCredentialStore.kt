@@ -100,6 +100,11 @@ class ChatGptCredentialStore @Inject constructor(
         get() = prefs.getBoolean(keyAutoAttach, true)
         set(value) = prefs.edit { putBoolean(keyAutoAttach, value) }
 
+    /** Run the assistant's library changes without asking each time. */
+    var autoApproveChanges: Boolean
+        get() = prefs.getBoolean(keyAutoApprove, false)
+        set(value) = prefs.edit { putBoolean(keyAutoApprove, value) }
+
     fun reasoningEffort(model: String): String? = prefs.getString("$keyEffortPrefix$model", null)
 
     fun setReasoningEffort(model: String, effort: String?) =
@@ -181,6 +186,7 @@ class ChatGptCredentialStore @Inject constructor(
         const val keyIdTokenHint = "idTokenHint"
         const val keyModel = "model"
         const val keyAutoAttach = "autoAttachSelection"
+        const val keyAutoApprove = "autoApproveChanges"
         const val keyEffortPrefix = "effort."
         const val keyCredentials = "credentials"
     }

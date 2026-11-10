@@ -1,0 +1,241 @@
+{
+  "specVersion": 1,
+  "notes": "Shared tool contract for every Zotero AI client (Android, desktop plugin). Each entry is an OpenAI Responses API function tool plus x- fields that are not sent to the model. Results are JSON objects whose exact shapes and ordering are defined in tools.md; conformance tests compare them byte-for-byte after normalization.",
+  "tools": [
+    {
+      "type": "function",
+      "name": "zotero_search_items",
+      "description": "Search the user's Zotero library for regular items (papers, books, web pages, ...; never attachments, notes or annotations). Every word of the query must match the title, an author name, the year or a tag. Use an empty query with a tag or collection_key to list items by that filter.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query": {"type": "string", "description": "Words to look for. May be empty."},
+          "tag": {"type": ["string", "null"], "description": "Only items with exactly this tag."},
+          "collection_key": {"type": ["string", "null"], "description": "Only items directly in this collection."},
+          "limit": {"type": ["integer", "null"], "description": "Maximum results, 1-100. Default 20."}
+        },
+        "required": ["query", "tag", "collection_key", "limit"],
+        "additionalProperties": false
+      },
+      "strict": true,
+      "x-write": false
+    },
+    {
+      "type": "function",
+      "name": "zotero_get_item_metadata",
+      "description": "Get the full metadata of one item: title, authors, date, venue, DOI, URL, abstract, tags, collections and its attachments/notes.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "item_key": {"type": "string", "description": "The item's 8-character key."}
+        },
+        "required": ["item_key"],
+        "additionalProperties": false
+      },
+      "strict": true,
+      "x-write": false
+    },
+    {
+      "type": "function",
+      "name": "zotero_get_item_fulltext",
+      "description": "Get the extracted full text of an item's PDF/EPUB/snapshot (from Zotero's synced full-text index). Use to read a paper that isn't the one open in the reader.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "item_key": {"type": "string", "description": "Key of the item or of the attachment itself."},
+          "max_chars": {"type": ["integer", "null"], "description": "Truncate to this many characters. Default 20000, max 100000."}
+        },
+        "required": ["item_key", "max_chars"],
+        "additionalProperties": false
+      },
+      "strict": true,
+      "x-write": false
+    },
+    {
+      "type": "function",
+      "name": "zotero_get_collections",
+      "description": "List all collections in the library with their keys, names, parents and how many items each contains.",
+      "parameters": {"type": "object", "properties": {}, "required": [], "additionalProperties": false},
+      "strict": true,
+      "x-write": false
+    },
+    {
+      "type": "function",
+      "name": "zotero_get_collection_items",
+      "description": "List the regular items directly in a collection.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "collection_key": {"type": "string"},
+          "limit": {"type": ["integer", "null"], "description": "Maximum results, 1-100. Default 50."}
+        },
+        "required": ["collection_key", "limit"],
+        "additionalProperties": false
+      },
+      "strict": true,
+      "x-write": false
+    },
+    {
+      "type": "function",
+      "name": "zotero_get_tags",
+      "description": "List the tags used in the library with how many items carry each.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "limit": {"type": ["integer", "null"], "description": "Maximum results, 1-500. Default 200."}
+        },
+        "required": ["limit"],
+        "additionalProperties": false
+      },
+      "strict": true,
+      "x-write": false
+    },
+    {
+      "type": "function",
+      "name": "zotero_get_recent",
+      "description": "List the most recently added regular items.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "limit": {"type": ["integer", "null"], "description": "Maximum results, 1-100. Default 10."}
+        },
+        "required": ["limit"],
+        "additionalProperties": false
+      },
+      "strict": true,
+      "x-write": false
+    },
+    {
+      "type": "function",
+      "name": "zotero_get_notes",
+      "description": "Get notes, either the child notes of one item or notes anywhere whose text contains a query.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "item_key": {"type": ["string", "null"], "description": "Only child notes of this item."},
+          "query": {"type": ["string", "null"], "description": "Only notes whose text contains this (case-insensitive)."},
+          "limit": {"type": ["integer", "null"], "description": "Maximum results, 1-50. Default 20."}
+        },
+        "required": ["item_key", "query", "limit"],
+        "additionalProperties": false
+      },
+      "strict": true,
+      "x-write": false
+    },
+    {
+      "type": "function",
+      "name": "zotero_get_annotations",
+      "description": "Get the highlights, underlines, notes and other annotations the user made on an item's attachments.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "item_key": {"type": "string", "description": "Key of the item or of the attachment."}
+        },
+        "required": ["item_key"],
+        "additionalProperties": false
+      },
+      "strict": true,
+      "x-write": false
+    },
+    {
+      "type": "function",
+      "name": "zotero_batch_update_tags",
+      "description": "Add and/or remove tags on one or more items. Requires the user's approval.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "item_keys": {"type": "array", "items": {"type": "string"}},
+          "add_tags": {"type": "array", "items": {"type": "string"}},
+          "remove_tags": {"type": "array", "items": {"type": "string"}}
+        },
+        "required": ["item_keys", "add_tags", "remove_tags"],
+        "additionalProperties": false
+      },
+      "strict": true,
+      "x-write": true
+    },
+    {
+      "type": "function",
+      "name": "zotero_set_item_collections",
+      "description": "Add items to and/or remove them from collections (by collection key). Requires the user's approval.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "item_keys": {"type": "array", "items": {"type": "string"}},
+          "add_to": {"type": "array", "items": {"type": "string"}},
+          "remove_from": {"type": "array", "items": {"type": "string"}}
+        },
+        "required": ["item_keys", "add_to", "remove_from"],
+        "additionalProperties": false
+      },
+      "strict": true,
+      "x-write": true
+    },
+    {
+      "type": "function",
+      "name": "zotero_create_collection",
+      "description": "Create a collection, optionally inside another one. Requires the user's approval.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "name": {"type": "string"},
+          "parent_collection_key": {"type": ["string", "null"]}
+        },
+        "required": ["name", "parent_collection_key"],
+        "additionalProperties": false
+      },
+      "strict": true,
+      "x-write": true
+    },
+    {
+      "type": "function",
+      "name": "zotero_create_note",
+      "description": "Create a note, as a child of an item or standalone. Content is Markdown. Requires the user's approval.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "parent_item_key": {"type": ["string", "null"], "description": "Item to attach the note to; null for a standalone note."},
+          "title": {"type": "string", "description": "Heading of the note."},
+          "content": {"type": "string", "description": "Body in Markdown."},
+          "tags": {"type": "array", "items": {"type": "string"}}
+        },
+        "required": ["parent_item_key", "title", "content", "tags"],
+        "additionalProperties": false
+      },
+      "strict": true,
+      "x-write": true
+    },
+    {
+      "type": "function",
+      "name": "zotero_add_item_by_identifier",
+      "description": "Add a paper or book to the library from a DOI, ISBN, arXiv ID or PMID, retrieving its metadata (and open-access PDF when available). Requires the user's approval.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "identifier": {"type": "string"},
+          "collection_key": {"type": ["string", "null"]},
+          "tags": {"type": "array", "items": {"type": "string"}}
+        },
+        "required": ["identifier", "collection_key", "tags"],
+        "additionalProperties": false
+      },
+      "strict": true,
+      "x-write": true
+    },
+    {
+      "type": "function",
+      "name": "zotero_trash_items",
+      "description": "Move items to the trash (recoverable). Requires the user's approval.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "item_keys": {"type": "array", "items": {"type": "string"}}
+        },
+        "required": ["item_keys"],
+        "additionalProperties": false
+      },
+      "strict": true,
+      "x-write": true
+    }
+  ]
+}

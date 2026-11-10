@@ -19,6 +19,7 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.livedata.observeAsState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -44,7 +45,9 @@ import org.zotero.android.screens.reader.search.ReaderSearchScreen
 import org.zotero.android.screens.reader.search.ReaderSearchViewModel
 import org.zotero.android.screens.reader.search.ReaderSearchViewState
 import org.zotero.android.screens.reader.settings.ReaderSettingsView
-import org.zotero.android.screens.reader.sidebar.chat.ReaderChatPanel
+import org.zotero.android.ai.ui.AiChatPanel
+import org.zotero.android.ai.ui.AiChatScope
+import org.zotero.android.ai.ui.ReaderChatHooks
 import org.zotero.android.screens.reader.scrubber.ReaderScrubberViewModel
 import org.zotero.android.screens.reader.sidebar.annotations.ReaderAnnotationsViewModel
 import org.zotero.android.screens.reader.sidebar.thumbnails.ReaderThumbnailsViewModel
@@ -265,7 +268,20 @@ internal fun ReaderScreen(
             }
                 },
                 panel = {
-                    ReaderChatPanel(readerViewModel = viewModel, readerViewState = viewState)
+                    val chatScope = remember(viewModel) { AiChatScope.Reader(viewModel::chatContext) }
+                    AiChatPanel(
+                        scope = chatScope,
+                        readerHooks = ReaderChatHooks(
+                            quote = viewState.chatQuote,
+                            consumeQuote = viewModel::consumeChatQuote,
+                            image = viewState.chatImage,
+                            consumeImage = viewModel::consumeChatImage,
+                            selectedText = viewState.selectedText,
+                            attachPage = viewModel::attachCurrentPageToChat,
+                            selectArea = viewModel::startAreaCapture,
+                        ),
+                        onClose = viewModel::toggleAiPanel,
+                    )
                 },
             )
         }

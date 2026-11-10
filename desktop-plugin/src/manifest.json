@@ -1,0 +1,15 @@
+{
+  "manifest_version": 2,
+  "name": "Zotero AI",
+  "version": "0.1.0",
+  "description": "Chat with what you're reading and manage your library, signed in with your ChatGPT account. Same tools and notes as the Zotero for Android AI panel.",
+  "author": "Raju Penmatsa",
+  "applications": {
+    "zotero": {
+      "id": "zotero-ai@zotero-android",
+      "update_url": "https://raw.githubusercontent.com/rajuptvs/zotero-android/ai-chat-panel/desktop-plugin/updates.json",
+      "strict_min_version": "7.0",
+      "strict_max_version": "10.*"
+    }
+  }
+}

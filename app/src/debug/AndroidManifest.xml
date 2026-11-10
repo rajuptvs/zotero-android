@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Debug builds only: lets the cross-device conformance tests (ai/conformance) call the AI tools
+     over adb, the way the desktop plugin exposes them on its local test endpoint. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <provider
+            android:name=".ai.test.AiTestProvider"
+            android:authorities="${applicationId}.aitest"
+            android:exported="true"
+            android:permission="android.permission.DUMP" />
+    </application>
+</manifest>

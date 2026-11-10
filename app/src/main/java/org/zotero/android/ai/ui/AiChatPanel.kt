@@ -1,4 +1,4 @@
-package org.zotero.android.screens.reader.sidebar.chat
+package org.zotero.android.ai.ui
 
 import android.content.ClipData
 import android.content.ClipboardManager
@@ -92,42 +92,51 @@ import org.zotero.android.ai.api.ChatImage
 import org.zotero.android.ai.api.ChatTurn
 import org.zotero.android.ai.auth.ChatGptAuthConfig
 import org.zotero.android.ai.auth.ChatGptAuthState
-import org.zotero.android.screens.reader.ReaderViewModel
-import org.zotero.android.screens.reader.ReaderViewState
 import org.zotero.android.uicomponents.Strings
 
+/** What the reader shares with the chat: selection, images and page capture. */
+internal class ReaderChatHooks(
+    val quote: String?,
+    val consumeQuote: () -> Unit,
+    val image: ChatImage?,
+    val consumeImage: () -> Unit,
+    val selectedText: String?,
+    val attachPage: () -> Unit,
+    val selectArea: () -> Unit,
+)
+
 /**
- * The AI chat, shown next to (or under) the document. It follows what's happening in the reader:
- * selected text becomes a "Text selection" attachment, and pages or areas of the page can be sent
- * as images.
+ * The AI chat panel: next to (or under) an open document, or beside the library. In the reader it
+ * follows what's happening there: selected text becomes a "Text selection" attachment, and pages
+ * or areas of the page can be sent as images.
  */
 @Composable
-internal fun ReaderChatPanel(
-    readerViewModel: ReaderViewModel,
-    readerViewState: ReaderViewState,
-    viewModel: ReaderChatViewModel = hiltViewModel(),
+internal fun AiChatPanel(
+    scope: AiChatScope,
+    readerHooks: ReaderChatHooks?,
+    onClose: () -> Unit,
+    viewModel: AiChatViewModel = hiltViewModel(),
 ) {
-    viewModel.start(contextProvider = readerViewModel::chatContext)
-    val viewState by viewModel.viewStates.observeAsState(ReaderChatViewState())
+    viewModel.start(scope)
+    val viewState by viewModel.viewStates.observeAsState(AiChatViewState())
 
-    val chatQuote = readerViewState.chatQuote
-    LaunchedEffect(chatQuote) {
-        if (chatQuote != null) {
-            viewModel.setQuote(chatQuote)
-            readerViewModel.consumeChatQuote()
+    if (readerHooks != null) {
+        LaunchedEffect(readerHooks.quote) {
+            if (readerHooks.quote != null) {
+                viewModel.setQuote(readerHooks.quote)
+                readerHooks.consumeQuote()
+            }
         }
-    }
-    val chatImage = readerViewState.chatImage
-    LaunchedEffect(chatImage) {
-        if (chatImage != null) {
-            viewModel.addImage(chatImage)
-            readerViewModel.consumeChatImage()
+        LaunchedEffect(readerHooks.image) {
+            if (readerHooks.image != null) {
+                viewModel.addImage(readerHooks.image)
+                readerHooks.consumeImage()
+            }
         }
-    }
-    val selectedText = readerViewState.selectedText
-    LaunchedEffect(selectedText, viewState.autoAttachSelection) {
-        if (selectedText != null && viewState.autoAttachSelection) {
-            viewModel.setQuote(selectedText)
+        LaunchedEffect(readerHooks.selectedText, viewState.autoAttachSelection) {
+            if (readerHooks.selectedText != null && viewState.autoAttachSelection) {
+                viewModel.setQuote(readerHooks.selectedText)
+            }
         }
     }
 
@@ -139,7 +148,7 @@ internal fun ReaderChatPanel(
         PanelHeader(
             viewState = viewState,
             viewModel = viewModel,
-            onClose = readerViewModel::toggleAiPanel,
+            onClose = onClose,
         )
         HorizontalDivider()
         when (val auth = viewState.auth) {
@@ -168,13 +177,52 @@ internal fun ReaderChatPanel(
                         viewModel = viewModel,
                         modifier = Modifier.weight(1f),
                     )
+                    viewState.pendingApproval?.let { pending ->
+                        ApprovalCard(
+                            pending = pending,
+                            onApprove = viewModel::approvePending,
+                            onDecline = viewModel::declinePending,
+                        )
+                    }
                     Composer(
                         viewState = viewState,
                         viewModel = viewModel,
-                        onAttachPage = readerViewModel::attachCurrentPageToChat,
-                        onSelectArea = readerViewModel::startAreaCapture,
+                        onAttachPage = readerHooks?.attachPage,
+                        onSelectArea = readerHooks?.selectArea,
                     )
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ApprovalCard(pending: PendingApproval, onApprove: () -> Unit, onDecline: () -> Unit) {
+    Surface(
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.tertiaryContainer,
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
+    ) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            Text(
+                text = stringResource(Strings.reader_chat_approval_title),
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onTertiaryContainer,
+            )
+            Spacer(Modifier.height(4.dp))
+            Text(
+                text = pending.description,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onTertiaryContainer,
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                horizontalArrangement = Arrangement.End,
+            ) {
+                TextButton(onClick = onDecline) { Text(stringResource(Strings.reader_chat_decline)) }
+                Spacer(Modifier.width(8.dp))
+                Button(onClick = onApprove) { Text(stringResource(Strings.reader_chat_approve)) }
             }
         }
     }
@@ -186,8 +234,8 @@ private fun openInBrowser(context: Context, uri: Uri) {
 
 @Composable
 private fun PanelHeader(
-    viewState: ReaderChatViewState,
-    viewModel: ReaderChatViewModel,
+    viewState: AiChatViewState,
+    viewModel: AiChatViewModel,
     onClose: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -208,7 +256,9 @@ private fun PanelHeader(
         )
         Spacer(Modifier.width(8.dp))
         Text(
-            text = stringResource(Strings.reader_chat_title),
+            text = stringResource(
+                if (viewState.isLibrary) Strings.reader_chat_library_title else Strings.reader_chat_title
+            ),
             style = MaterialTheme.typography.titleMedium,
             modifier = Modifier.weight(1f),
         )
@@ -257,12 +307,21 @@ private fun PanelHeader(
                     signedIn.email?.let { email ->
                         DropdownMenuItem(text = { Text(email) }, onClick = {}, enabled = false)
                     }
+                    if (!viewState.isLibrary) {
+                        DropdownMenuItem(
+                            text = { Text(stringResource(Strings.reader_chat_auto_attach)) },
+                            trailingIcon = {
+                                Checkbox(checked = viewState.autoAttachSelection, onCheckedChange = null)
+                            },
+                            onClick = { viewModel.setAutoAttachSelection(!viewState.autoAttachSelection) }
+                        )
+                    }
                     DropdownMenuItem(
-                        text = { Text(stringResource(Strings.reader_chat_auto_attach)) },
+                        text = { Text(stringResource(Strings.reader_chat_auto_approve)) },
                         trailingIcon = {
-                            Checkbox(checked = viewState.autoAttachSelection, onCheckedChange = null)
+                            Checkbox(checked = viewState.autoApprove, onCheckedChange = null)
                         },
-                        onClick = { viewModel.setAutoAttachSelection(!viewState.autoAttachSelection) }
+                        onClick = { viewModel.setAutoApprove(!viewState.autoApprove) }
                     )
                     DropdownMenuItem(
                         text = { Text(stringResource(Strings.reader_chat_usage)) },
@@ -357,8 +416,8 @@ private fun SignInPrompt(
 
 @Composable
 private fun ChatMessages(
-    viewState: ReaderChatViewState,
-    viewModel: ReaderChatViewModel,
+    viewState: AiChatViewState,
+    viewModel: AiChatViewModel,
     modifier: Modifier,
 ) {
     val listState = rememberLazyListState()
@@ -379,13 +438,29 @@ private fun ChatMessages(
         }
     }
     if (viewState.turns.isEmpty() && viewState.phase == null && viewState.error == null) {
-        Box(modifier = modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) {
+        Column(
+            modifier = modifier.fillMaxWidth().padding(24.dp),
+            verticalArrangement = Arrangement.Center,
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
             Text(
-                text = stringResource(Strings.reader_chat_empty),
+                text = stringResource(
+                    if (viewState.isLibrary) Strings.reader_chat_library_empty else Strings.reader_chat_empty
+                ),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center,
             )
+            if (viewState.isLibrary) {
+                Spacer(Modifier.height(16.dp))
+                librarySuggestions.forEach { suggestion ->
+                    AssistChip(
+                        onClick = { viewModel.runSuggestion(suggestion) },
+                        label = { Text(suggestion) },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+            }
         }
         return
     }
@@ -400,6 +475,7 @@ private fun ChatMessages(
             if (turn.role == "user") {
                 UserMessage(turn)
             } else {
+                ToolActivity(turn.activity)
                 AssistantMessage(
                     text = turn.text,
                     actions = {
@@ -408,7 +484,7 @@ private fun ChatMessages(
                             saved = index in viewState.savedAnswers,
                             canSave = viewState.canSave,
                             onSave = { viewModel.saveAnswerAsNote(index) },
-                            onExplainAgain = if (index == lastAnswerIndex && !viewState.isSending) {
+                            onExplainAgain = if (!viewState.isLibrary && index == lastAnswerIndex && !viewState.isSending) {
                                 viewModel::explainAgain
                             } else {
                                 null
@@ -420,6 +496,7 @@ private fun ChatMessages(
         }
         item {
             Column {
+                if (viewState.isSending) ToolActivity(viewState.liveActivity)
                 viewState.streamingText?.takeIf { it.isNotEmpty() }?.let { text ->
                     AssistantMessage(text = text, actions = null)
                 }
@@ -439,12 +516,30 @@ private fun ChatMessages(
     }
 }
 
+/** What the assistant did in the library for an answer, one quiet line per tool. */
+@Composable
+private fun ToolActivity(lines: List<String>) {
+    if (lines.isEmpty()) return
+    Column(modifier = Modifier.padding(bottom = 4.dp)) {
+        lines.forEach { line ->
+            Text(
+                text = "• $line",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+    }
+}
+
 @Composable
 private fun StatusLine(phase: ChatPhase) {
     val label = when (phase) {
         ChatPhase.ReadingDocument -> stringResource(Strings.reader_chat_reading_document)
         ChatPhase.Thinking -> stringResource(Strings.reader_chat_thinking)
         ChatPhase.Writing -> stringResource(Strings.reader_chat_writing)
+        is ChatPhase.RunningTool -> phase.label + "…"
     }
     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 6.dp)) {
         CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
@@ -605,10 +700,10 @@ private fun ImageThumbnail(image: ChatImage, size: Int, onRemove: (() -> Unit)? 
 
 @Composable
 private fun Composer(
-    viewState: ReaderChatViewState,
-    viewModel: ReaderChatViewModel,
-    onAttachPage: () -> Unit,
-    onSelectArea: () -> Unit,
+    viewState: AiChatViewState,
+    viewModel: AiChatViewModel,
+    onAttachPage: (() -> Unit)?,
+    onSelectArea: (() -> Unit)?,
 ) {
     var showAttachMenu by remember { mutableStateOf(false) }
     val imagesSupported = viewState.selectedModel?.supportsImages != false
@@ -682,7 +777,7 @@ private fun Composer(
             }
         }
         Row(verticalAlignment = Alignment.Bottom) {
-            Box {
+            if (onAttachPage != null && onSelectArea != null) Box {
                 IconButton(onClick = { showAttachMenu = true }) {
                     Icon(Icons.Default.Add, contentDescription = stringResource(Strings.reader_chat_attach))
                 }
@@ -718,7 +813,14 @@ private fun Composer(
                 value = viewState.input,
                 onValueChange = viewModel::setInput,
                 modifier = Modifier.weight(1f).heightIn(min = 48.dp),
-                placeholder = { Text(stringResource(Strings.reader_chat_input_hint)) },
+                placeholder = {
+                    Text(
+                        stringResource(
+                            if (viewState.isLibrary) Strings.reader_chat_library_input_hint
+                            else Strings.reader_chat_input_hint
+                        )
+                    )
+                },
                 maxLines = 6,
                 shape = RoundedCornerShape(22.dp),
             )
@@ -743,10 +845,10 @@ private fun Composer(
 }
 
 @Composable
-private fun ModelPicker(viewState: ReaderChatViewState, viewModel: ReaderChatViewModel) {
+private fun ModelPicker(viewState: AiChatViewState, viewModel: AiChatViewModel) {
     var expanded by remember { mutableStateOf(false) }
     val model = viewState.selectedModel
-    Box(modifier = Modifier.padding(start = 40.dp)) {
+    Box(modifier = Modifier.padding(start = if (viewState.isLibrary) 4.dp else 40.dp)) {
         TextButton(
             onClick = { expanded = true },
             enabled = viewState.models.isNotEmpty(),

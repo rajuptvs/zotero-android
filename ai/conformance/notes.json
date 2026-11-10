@@ -1,0 +1,26 @@
+[
+ {
+  "name": "reader note",
+  "html": "<div data-schema-version=\"9\" data-zotero-ai-attachment=\"XX9GTLGR\"><h1>AI chat: Attention Is All You Need</h1>\n<p><strong>You:</strong></p>\n<p>About this passage:</p>\n<p>&quot;We call our particular attention &quot;Scaled Dot-Product Attention&quot;.&quot;</p>\n<p>Explain this passage &amp; compare &lt;softmax&gt; variants.</p>\n<p>[Image: area on Page 3]</p>\n<p><strong>ChatGPT:</strong></p>\n<p>With $d_k=64$, the scaling factor is:</p>\n<p>$\\frac{1}{\\sqrt{64}}=\\frac18$</p>\n<p>| | Scores | Weights |</p>\n<p>|---|---|---|</p>\n<p>| Without scaling | $[16,8]$ | $[0.9997, 0.0003]$ |</p>\n<p>| With scaling | $[2,1]$ | $[0.73, 0.27]$ |</p>\n<p>The output is therefore mostly **v1**.</p>\n<p>```python</p>\n<p>scores = q @ k.T / math.sqrt(d_k)</p>\n<p>weights = softmax(scores)</p>\n<p>```</p>\n<p>- point one</p>\n<p>- point two</p>\n<p><strong>You:</strong></p>\n<p>Thanks! What about You: inside text?</p>\n<p><strong>ChatGPT:</strong></p>\n<p><strong>You:</strong> is only a label on its own line.</p>\n</div>"
+ },
+ {
+  "name": "reader note, attribute stripped by note editor",
+  "html": "<div data-schema-version=\"9\"><h1>AI chat: Attention Is All You Need</h1><p><strong>You:</strong></p><p>About this passage:</p><p>&quot;We call our particular attention &quot;Scaled Dot-Product Attention&quot;.&quot;</p><p>Explain this passage &amp; compare &lt;softmax&gt; variants.</p><p>[Image: area on Page 3]</p><p><strong>ChatGPT:</strong></p><p>With $d_k=64$, the scaling factor is:</p><p>$\\frac{1}{\\sqrt{64}}=\\frac18$</p><p>| | Scores | Weights |</p><p>|---|---|---|</p><p>| Without scaling | $[16,8]$ | $[0.9997, 0.0003]$ |</p><p>| With scaling | $[2,1]$ | $[0.73, 0.27]$ |</p><p>The output is therefore mostly **v1**.</p><p>```python</p><p>scores = q @ k.T / math.sqrt(d_k)</p><p>weights = softmax(scores)</p><p>```</p><p>- point one</p><p>- point two</p><p><strong>You:</strong></p><p>Thanks! What about You: inside text?</p><p><strong>ChatGPT:</strong></p><p><strong>You:</strong> is only a label on its own line.</p></div>"
+ },
+ {
+  "name": "library note",
+  "html": "<div data-schema-version=\"9\" data-zotero-ai-scope=\"library\"><h1>AI chat: Library — What did I add recently?</h1>\n<p><strong>You:</strong></p>\n<p>What did I add recently?</p>\n<p><strong>ChatGPT:</strong></p>\n<p>1. **BERT** — `7KLQ74ZI`</p>\n<p>2. **Attention Is All You Need** — `2MIWXEWJ`</p>\n</div>"
+ },
+ {
+  "name": "library note, attribute stripped by note editor",
+  "html": "<div data-schema-version=\"9\"><h1>AI chat: Library — What did I add recently?</h1><p><strong>You:</strong></p><p>What did I add recently?</p><p><strong>ChatGPT:</strong></p><p>1. **BERT** — `7KLQ74ZI`</p><p>2. **Attention Is All You Need** — `2MIWXEWJ`</p></div>"
+ },
+ {
+  "name": "library note without wrapper",
+  "html": "<h1>AI chat: Library — What did I add recently?</h1>\n<p><strong>You:</strong></p>\n<p>What did I add recently?</p>\n<p><strong>ChatGPT:</strong></p>\n<p>1. **BERT** — `7KLQ74ZI`</p>\n<p>2. **Attention Is All You Need** — `2MIWXEWJ`</p>\n"
+ },
+ {
+  "name": "ordinary note",
+  "html": "<div data-schema-version=\"9\"><h1>Reading notes</h1>\n<p>Library — not a chat.</p>\n<p><strong>You:</strong></p>\n</div>"
+ }
+]
