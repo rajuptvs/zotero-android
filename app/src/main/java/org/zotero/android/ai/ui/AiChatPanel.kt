@@ -1,5 +1,6 @@
 package org.zotero.android.ai.ui
 
+import org.zotero.android.ai.chat.ChatMarkdown
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
@@ -578,12 +579,17 @@ private fun UserMessage(turn: ChatTurn) {
 @Composable
 private fun AssistantMessage(text: String, actions: (@Composable () -> Unit)?) {
     Column(modifier = Modifier.fillMaxWidth()) {
-        SelectionContainer {
-            Markdown(
-                content = text,
-                typography = chatTypography(),
-                modifier = Modifier.fillMaxWidth(),
-            )
+        // Finished answers with math are typeset; while streaming, the formulas aren't complete yet.
+        if (actions != null && ChatMarkdown.containsMath(text)) {
+            MathAnswer(text)
+        } else {
+            SelectionContainer {
+                Markdown(
+                    content = text,
+                    typography = chatTypography(),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
         }
         actions?.invoke()
     }

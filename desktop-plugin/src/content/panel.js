@@ -417,11 +417,33 @@ ZoteroAI.Panel = class {
 	_setMarkdown(el, markdown) {
 		try {
 			let doc = new DOMParser().parseFromString(`<body>${ZoteroAI.Notes.toHTML(markdown)}</body>`, "text/html");
+			this._typesetMath(doc);
 			el.replaceChildren(...[...doc.body.childNodes].map((n) => this.doc.importNode(n, true)));
 		}
 		catch (e) {
 			Zotero.logError(e);
 			el.textContent = markdown;
+		}
+	}
+
+	/**
+	 * Turns the note math markup from Notes.toHTML (<span class="math">$…$</span>,
+	 * <pre class="math">$$…$$</pre>) into MathML, which Zotero draws natively. Anything KaTeX
+	 * can't parse stays as its TeX source.
+	 */
+	_typesetMath(doc) {
+		for (let node of doc.querySelectorAll(".math")) {
+			let display = node.localName == "pre";
+			let tex = node.textContent.replace(display ? /^\$\$|\$\$$/g : /^\$|\$$/g, "");
+			try {
+				let mathml = katex.renderToString(tex, { output: "mathml", displayMode: display, throwOnError: true });
+				let parsed = new DOMParser().parseFromString(`<body>${mathml}</body>`, "text/html").body.firstElementChild;
+				parsed.classList.add(display ? "zai-math-block" : "zai-math");
+				node.replaceWith(doc.importNode(parsed, true));
+			}
+			catch (e) {
+				// Unsupported TeX: keep the source.
+			}
 		}
 	}
 
@@ -495,6 +517,8 @@ ZoteroAI.PANEL_CSS = `
 .zai-markdown code { font-family: monospace; }
 .zai-markdown table { border-collapse: collapse; display: block; overflow-x: auto; max-width: 100%; }
 .zai-markdown img { max-width: 100%; }
+.zai-markdown math { font-size: 1.1em; }
+.zai-math-block { display: block; overflow-x: auto; margin: 6px 0; }
 .zai-markdown td, .zai-markdown th { border: 1px solid var(--fill-quinary, #ccc); padding: 2px 6px; }
 .zai-activity { margin: 0 0 6px; padding-left: 16px; font-size: 12px; opacity: .75; }
 .zai-actions { display: flex; gap: 4px; margin-top: 4px; flex-wrap: wrap; }

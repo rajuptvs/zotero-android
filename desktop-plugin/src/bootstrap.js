@@ -11,6 +11,7 @@ async function startup({ id, version, rootURI }) {
 	// Web APIs the plugin uses from its own (non-window) scope.
 	Cu.importGlobalProperties(["fetch", "AbortController", "TextDecoder", "TextEncoder", "URL", "URLSearchParams", "crypto", "btoa", "atob", "DOMParser", "XMLSerializer"]);
 	Services.scriptloader.loadSubScript(rootURI + "content/vendor/marked.umd.js");
+	Services.scriptloader.loadSubScript(rootURI + "content/vendor/katex.min.js");
 	for (let file of ["util", "spec", "notes", "tools", "auth", "api", "chat", "capture", "panel", "windows", "main"]) {
 		Services.scriptloader.loadSubScript(rootURI + `content/${file}.js`);
 	}

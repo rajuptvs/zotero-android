@@ -58,6 +58,10 @@ object ChatMarkdown {
         return html
     }
 
+    /** Whether the answer has any math (outside code), so the panel typesets it. */
+    fun containsMath(markdown: String): Boolean =
+        mathOrCode.findAll(markdown).any { it.groups[1] == null }
+
     private fun placeholder(math: MutableList<Pair<String, Boolean>>, tex: String, display: Boolean): String {
         math.add(tex to display)
         return "ZAIMATH${math.size - 1}Z"

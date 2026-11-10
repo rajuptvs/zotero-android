@@ -119,7 +119,7 @@ aside before Markdown parsing; code spans and fenced code are left alone.
 
 Both clients provide: reader panel beside the document, library panel, selected-text chip,
 quick actions (Explain, Simplify, Translate, Define terms), attach page / area as image,
-Markdown answers, status line (Reading the document… / Thinking… / Writing the answer… /
+Markdown answers with math typeset by KaTeX (from the note math markup above), status line (Reading the document… / Thinking… / Writing the answer… /
 Running {tool}…), stop, model + reasoning picker, Copy / Save as note / Explain again, history menu,
 new chat, approval cards for writes (Approve / Decline, showing what will change), sign-in /
 sign-out / switch account / usage link.
