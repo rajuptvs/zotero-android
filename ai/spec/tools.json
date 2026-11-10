@@ -235,7 +235,24 @@
         "additionalProperties": false
       },
       "strict": true,
-      "x-write": true
+      "x-write": true,
+      "x-always-ask": true
+    },
+    {
+      "type": "function",
+      "name": "zotero_await_approval",
+      "description": "Wait for the user's decision on a change that is waiting for approval in Zotero, and get its result. Use the approval_id from a pending_approval result; don't repeat the original call.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "approval_id": {"type": "string"}
+        },
+        "required": ["approval_id"],
+        "additionalProperties": false
+      },
+      "strict": true,
+      "x-write": false,
+      "x-mcp-only": true
     }
   ]
 }

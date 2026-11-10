@@ -62,6 +62,16 @@ ZoteroAI = {
 	},
 
 	/** Plain text of note HTML, whitespace collapsed (spec: zotero_get_notes `text`). */
+	/** JSON with object keys sorted, so equal values give equal strings. */
+	canonicalJSON(value) {
+		let sort = (v) => {
+			if (Array.isArray(v)) return v.map(sort);
+			if (v && typeof v == "object") return Object.fromEntries(Object.keys(v).sort().map((k) => [k, sort(v[k])]));
+			return v;
+		};
+		return JSON.stringify(sort(value));
+	},
+
 	plainText(html) {
 		let doc = new DOMParser().parseFromString(`<body>${html || ""}</body>`, "text/html");
 		for (let el of doc.querySelectorAll("p, div, h1, h2, h3, h4, h5, h6, li, br, tr, blockquote, pre")) {

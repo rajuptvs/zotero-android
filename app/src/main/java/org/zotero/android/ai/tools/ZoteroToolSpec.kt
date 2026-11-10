@@ -28,10 +28,15 @@ class ZoteroToolSpec @Inject constructor(context: Context) {
     val readerInstructions: String get() = prompts.get("reader").asString
     val libraryInstructions: String get() = prompts.get("library").asString
 
+    /** Tools the chat offers the model (MCP-only tools such as zotero_await_approval left out). */
+    private val chatTools: List<JsonObject> by lazy {
+        tools.map { it.asJsonObject }.filter { it.get("x-mcp-only")?.asBoolean != true }
+    }
+
     /** Tool definitions as sent to the Responses API (the `x-` fields stripped). */
     val apiTools: JsonArray by lazy {
         JsonArray().apply {
-            tools.forEach { element ->
+            chatTools.forEach { element ->
                 val tool = element.asJsonObject.deepCopy()
                 tool.keySet().filter { it.startsWith("x-") }.forEach { tool.remove(it) }
                 add(tool)
@@ -39,10 +44,20 @@ class ZoteroToolSpec @Inject constructor(context: Context) {
         }
     }
 
-    fun isWrite(name: String): Boolean = tools.any {
-        val tool = it.asJsonObject
-        tool.get("name").asString == name && tool.get("x-write")?.asBoolean == true
-    }
+    private fun tool(name: String): JsonObject? =
+        tools.map { it.asJsonObject }.firstOrNull { it.get("name").asString == name }
 
-    fun isKnown(name: String): Boolean = tools.any { it.asJsonObject.get("name").asString == name }
+    val toolNames: List<String> get() = tools.map { it.asJsonObject.get("name").asString }
+
+    fun isWrite(name: String): Boolean = tool(name)?.get("x-write")?.asBoolean == true
+
+    /** A tool the chat may call. */
+    fun isKnown(name: String): Boolean = chatTools.any { it.get("name").asString == name }
+
+    /** Whether a call needs the user's decision (ai/spec/tools.md, "Write tools"). */
+    fun shouldAsk(name: String, autoApprove: Boolean): Boolean {
+        val tool = tool(name) ?: return false
+        if (tool.get("x-write")?.asBoolean != true) return false
+        return tool.get("x-always-ask")?.asBoolean == true || !autoApprove
+    }
 }

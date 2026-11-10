@@ -56,6 +56,9 @@ class Android:
     def markdown(self, text):
         return self._call("markdown", None, {"markdown": text})["html"]
 
+    def policy(self):
+        return self._call("policy")
+
 
 class Desktop:
     name = "desktop"
@@ -86,6 +89,9 @@ class Desktop:
 
     def markdown(self, text):
         return self._post("/zotero-ai/test/markdown", {"markdown": text})["html"]
+
+    def policy(self):
+        return self._post("/zotero-ai/test/policy", {})
 
     def chat_notes(self):
         """HTML of the real conversation notes in the library, to read back on both devices."""
@@ -156,8 +162,8 @@ def describe_calls(collection_key):
         ("zotero_create_collection", {"name": "Transformers", "parent_collection_key": collection_key}),
         ("zotero_create_note", {"parent_item_key": None, "title": "Reading list", "content": "x", "tags": []}),
         ("zotero_create_note", {"parent_item_key": "2MIWXEWJ", "title": "Summary", "content": "x", "tags": []}),
-        ("zotero_add_item_by_identifier", {"identifier": "10.48550/arXiv.1706.03762", "collection_key": None}),
-        ("zotero_add_item_by_identifier", {"identifier": "arXiv:1810.04805", "collection_key": collection_key}),
+        ("zotero_add_item_by_identifier", {"identifier": "10.48550/arXiv.1706.03762", "collection_key": None, "tags": []}),
+        ("zotero_add_item_by_identifier", {"identifier": "arXiv:1810.04805", "collection_key": collection_key, "tags": []}),
         ("zotero_trash_items", {"item_keys": five[:4]}),
         ("zotero_trash_items", {"item_keys": ["NOPE0000"]}),
     ]
@@ -201,6 +207,16 @@ def main():
         a, d = normalize(android.tool(name, args)), normalize(desktop.tool(name, args))
         problems = diff(a, d)
         check(results, f"{name} {json.dumps(args)}", not problems, "; ".join(problems[:5]))
+
+    print("== approval policy parity")
+    a, d = android.policy(), desktop.policy()
+    check(results, "shouldAsk is the same for every tool", a == d, "; ".join(diff(a, d)[:5]))
+    with open(__file__.rsplit("/", 1)[0] + "/../spec/tools.json") as f:
+        spec_tools = json.load(f)["tools"]
+    writes = [t["name"] for t in spec_tools if t.get("x-write")]
+    check(results, "every write asks with auto-approve off", all(d[n]["ask"] for n in writes))
+    check(results, "trash asks even with auto-approve on", d["zotero_trash_items"]["askWithAutoApprove"] is True)
+    check(results, "reads never ask", not any(d[t["name"]]["ask"] for t in spec_tools if not t.get("x-write")))
 
     print("== approval text parity")
     for name, args in describe_calls(collections[0]["key"]):

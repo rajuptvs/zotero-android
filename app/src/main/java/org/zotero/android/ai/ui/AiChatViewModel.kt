@@ -250,8 +250,8 @@ internal class AiChatViewModel @Inject constructor(
     }
 
     private suspend fun askApproval(name: String, description: String): Boolean {
-        // Read the setting now (another screen may have changed it); trashing always asks.
-        if (credentialStore.autoApproveChanges && name !in alwaysAsk) return true
+        // Read the setting now (another screen may have changed it); the spec decides what always asks.
+        if (!toolSpec.shouldAsk(name, credentialStore.autoApproveChanges)) return true
         val deferred = CompletableDeferred<Boolean>()
         approval = deferred
         updateState { copy(pendingApproval = PendingApproval(name, description)) }
@@ -805,8 +805,6 @@ internal class AiChatViewModel @Inject constructor(
         const val maxDocumentChars = 200_000
         const val maxToolRounds = 12
 
-        /** Changes that ask even with "Approve changes automatically" on (ai/spec/chat.md). */
-        val alwaysAsk = setOf("zotero_trash_items")
         val documentTag = Regex("<(/?)document>", RegexOption.IGNORE_CASE)
     }
 }

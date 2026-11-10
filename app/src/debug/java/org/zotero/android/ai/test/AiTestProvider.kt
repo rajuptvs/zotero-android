@@ -30,6 +30,7 @@ import org.zotero.android.sync.SyncScheduler
  *   ... --method describe --arg <write tool> --extra args64:s:<base64 JSON>  (approval card text)
  *   ... --method notes --extra args64:s:<base64 {"html"}>  (how a conversation note is read back)
  *   ... --method markdown --extra args64:s:<base64 {"markdown"}>  (answer → note HTML)
+ *   ... --method policy  (shouldAsk for every tool)
  * Writes run without the approval card, like the desktop plugin's test endpoint.
  */
 class AiTestProvider : ContentProvider() {
@@ -38,6 +39,7 @@ class AiTestProvider : ContentProvider() {
     @InstallIn(SingletonComponent::class)
     interface Deps {
         fun zoteroTools(): ZoteroTools
+        fun toolSpec(): org.zotero.android.ai.tools.ZoteroToolSpec
         fun syncScheduler(): SyncScheduler
     }
 
@@ -57,6 +59,17 @@ class AiTestProvider : ContentProvider() {
 
             "describe" -> runBlocking {
                 JsonObject().apply { addProperty("description", deps.zoteroTools().describeWrite(arg.orEmpty(), args)) }
+            }
+
+            // The approval rule for every tool, with auto-approve off and on (compared with desktop).
+            "policy" -> JsonObject().apply {
+                val spec = deps.toolSpec()
+                spec.toolNames.forEach { name ->
+                    add(name, JsonObject().apply {
+                        addProperty("ask", spec.shouldAsk(name, false))
+                        addProperty("askWithAutoApprove", spec.shouldAsk(name, true))
+                    })
+                }
             }
 
             "markdown" -> JsonObject().apply {

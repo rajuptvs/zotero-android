@@ -91,8 +91,16 @@ Default limit 10.
 attachments (or the one attachment), sorted by attachment key then Zotero's annotation sort index.
 
 ### Write tools
-Writes need the user's approval in the client UI before running (except in the dev-only test
-endpoints). They change only the local library; normal Zotero sync propagates them.
+Writes need the user's approval in the client UI before running. They change only the local
+library; normal Zotero sync propagates them.
+
+- Whether to ask is one rule on every client: `shouldAsk(tool, autoApprove)` is true for tools with
+  `x-always-ask` (trash), and otherwise for `x-write` tools unless `autoApprove` is on. Reads never ask.
+- Arguments are checked against the tool's schema before anything is asked or run: a plain object,
+  required keys present (an omitted nullable becomes `null`), correct types (integers are whole
+  numbers, array items have the item type), no unknown keys. Otherwise `invalid_argument`.
+- Tools marked `x-mcp-only` (`zotero_await_approval`) exist only on the MCP server (`mcp.md`); chat
+  clients never offer them to the model.
 
 - `zotero_batch_update_tags` → `{"updated": ["KEY1", ...]}` keys whose tags changed, sorted.
   Adding an existing tag or removing a missing one is not a change. Unknown keys → `not_found`

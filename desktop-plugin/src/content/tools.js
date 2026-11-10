@@ -16,13 +16,20 @@ ZoteroAI.Tools = {
 		return Zotero.Libraries.userLibraryID;
 	},
 
-	/** Runs a tool. Never throws: failures come back as error objects. */
-	async execute(name, args) {
-		args = args || {};
+	/**
+	 * Runs a tool. Never throws: failures come back as error objects. Writes run only with the
+	 * capability that ZoteroAI.Approvals holds, i.e. after a decision there (approvals.js).
+	 */
+	async execute(name, args, capability) {
 		try {
 			let fn = this._tools[name];
 			if (!fn) throw new ZoteroAIToolError("invalid_argument", `Unknown tool ${name}`);
-			return await fn.call(this, args);
+			let checked = ZoteroAI.Spec.validateArgs(name, args);
+			if (checked.error) return checked;
+			if (ZoteroAI.Spec.isWrite(name) && !ZoteroAI.Approvals.authorizes(capability)) {
+				throw new ZoteroAIToolError("declined", "Changes need the user's approval.");
+			}
+			return await fn.call(this, checked.args);
 		}
 		catch (e) {
 			if (e instanceof ZoteroAIToolError) return { error: e.code, message: e.message };

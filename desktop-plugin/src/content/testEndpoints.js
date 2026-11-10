@@ -4,7 +4,8 @@
  * with ZOTERO_AI_TEST_TOKEN set (both done by scripts/dev-zotero.sh), and every request must send
  * that token in the X-Zotero-AI-Test-Token header. They let
  * ai/conformance/run.py call the same tools as on Android, and let tests drive the UI headlessly.
- *   POST /zotero-ai/test/tool        {"name", "args"}  → the tool's result (writes run unapproved)
+ *   POST /zotero-ai/test/tool        {"name", "args"}  → the tool's result (writes approved by a stand-in)
+ *   POST /zotero-ai/test/policy      {}                → shouldAsk for every tool
  *   POST /zotero-ai/test/sync        {}                → runs a Zotero sync
  *   GET  /zotero-ai/test/status                        → plugin and account status
  *   POST /zotero-ai/test/eval        {"code"}          → runs async JS in the plugin scope (UI driving)
@@ -18,7 +19,7 @@
 ZoteroAI.TestEndpoints = {
 	PATHS: ["/zotero-ai/test/tool", "/zotero-ai/test/sync", "/zotero-ai/test/status",
 		"/zotero-ai/test/eval", "/zotero-ai/test/screenshot", "/zotero-ai/test/signin",
-		"/zotero-ai/test/describe", "/zotero-ai/test/notes", "/zotero-ai/test/markdown"],
+		"/zotero-ai/test/describe", "/zotero-ai/test/notes", "/zotero-ai/test/markdown", "/zotero-ai/test/policy"],
 
 	register() {
 		let token = Services.env.get("ZOTERO_AI_TEST_TOKEN");
@@ -44,7 +45,17 @@ ZoteroAI.TestEndpoints = {
 			return E;
 		};
 		let E = Zotero.Server.Endpoints;
-		E["/zotero-ai/test/tool"] = endpoint(["POST"], (data) => ZoteroAI.Tools.execute(data.name, data.args || {}));
+		// Writes go through the approval service with a test stand-in for the user's "Approve".
+		E["/zotero-ai/test/tool"] = endpoint(["POST"], async (data) => {
+			if (!ZoteroAI.Spec.isWrite(data.name)) return ZoteroAI.Tools.execute(data.name, data.args || {});
+			let run = await ZoteroAI.Approvals.run({ origin: { kind: "test" }, name: data.name, args: data.args || {}, present: async () => true });
+			return run.result;
+		});
+		// The approval rule for every tool, with auto-approve off and on (compared with Android).
+		E["/zotero-ai/test/policy"] = endpoint(["POST"], async () => Object.fromEntries(ZoteroAI.Spec.tools.map((t) => [t.name, {
+			ask: ZoteroAI.Spec.shouldAsk(t.name, false),
+			askWithAutoApprove: ZoteroAI.Spec.shouldAsk(t.name, true),
+		}])));
 		E["/zotero-ai/test/sync"] = endpoint(["POST"], async () => {
 			await Zotero.Sync.Runner.sync({ background: true });
 			return { synced: true };

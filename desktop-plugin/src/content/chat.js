@@ -39,8 +39,6 @@ ZoteroAI.TOOL_LABELS = {
 ZoteroAI.ChatSession = class {
 	static MAX_DOCUMENT_CHARS = 200000;
 	static MAX_TOOL_ROUNDS = 12;
-	// Changes that always ask, even with "Approve changes automatically" on (ai/spec/chat.md).
-	static ALWAYS_ASK = ["zotero_trash_items"];
 	static all = new Set();
 
 	/**
@@ -200,9 +198,8 @@ ZoteroAI.ChatSession = class {
 		this._approval?.(false);
 	}
 
+	/** Shows the approval card; ZoteroAI.Approvals decides whether to ask at all. */
 	async _askApproval(name, description) {
-		// Read the setting now, not when this chat was opened.
-		if (ZoteroAI.pref("autoApproveChanges") === true && !ZoteroAI.ChatSession.ALWAYS_ASK.includes(name)) return true;
 		let answer = await new Promise((resolve) => {
 			this._approval = resolve;
 			this.set({ pendingApproval: { toolName: name, description } });
@@ -393,15 +390,16 @@ ZoteroAI.ChatSession = class {
 					result = { error: "invalid_argument", message: `Unknown tool ${call.name}` };
 				}
 				else if (ZoteroAI.Spec.isWrite(call.name)) {
-					let description = await ZoteroAI.Tools.describeWrite(call.name, args);
-					if (await this._askApproval(call.name, description)) {
-						result = await ZoteroAI.Tools.execute(call.name, args);
-						activity.push((result.error ? "✗ " : "✓ ") + description);
-					}
-					else {
-						activity.push("Declined: " + description);
-						result = { error: "declined", message: "The user declined this change." };
-					}
+					let run = await ZoteroAI.Approvals.run({
+						origin: { kind: "chat" },
+						name: call.name,
+						args,
+						present: (description) => this._askApproval(call.name, description),
+					});
+					result = run.result;
+					if (run.description == null) activity.push(label + " (failed)");
+					else if (run.approved) activity.push((result.error ? "✗ " : "✓ ") + run.description);
+					else activity.push("Declined: " + run.description);
 				}
 				else {
 					result = await ZoteroAI.Tools.execute(call.name, args);
