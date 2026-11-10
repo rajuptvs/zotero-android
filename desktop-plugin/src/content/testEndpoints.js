@@ -19,7 +19,8 @@
 ZoteroAI.TestEndpoints = {
 	PATHS: ["/zotero-ai/test/tool", "/zotero-ai/test/sync", "/zotero-ai/test/status",
 		"/zotero-ai/test/eval", "/zotero-ai/test/screenshot", "/zotero-ai/test/signin",
-		"/zotero-ai/test/describe", "/zotero-ai/test/notes", "/zotero-ai/test/markdown", "/zotero-ai/test/policy"],
+		"/zotero-ai/test/describe", "/zotero-ai/test/notes", "/zotero-ai/test/markdown", "/zotero-ai/test/policy",
+		"/zotero-ai/test/mcp-client", "/zotero-ai/test/approvals"],
 
 	register() {
 		let token = Services.env.get("ZOTERO_AI_TEST_TOKEN");
@@ -50,6 +51,25 @@ ZoteroAI.TestEndpoints = {
 			if (!ZoteroAI.Spec.isWrite(data.name)) return ZoteroAI.Tools.execute(data.name, data.args || {});
 			let run = await ZoteroAI.Approvals.run({ origin: { kind: "test" }, name: data.name, args: data.args || {}, present: async () => true });
 			return run.result;
+		});
+		// MCP test setup: turn the server on/off, add or revoke clients, set auto-approve.
+		E["/zotero-ai/test/mcp-client"] = endpoint(["POST"], async (data) => {
+			if ("enable" in data) ZoteroAI.McpServer.setEnabled(data.enable);
+			if (data.revoke) ZoteroAI.McpClients.revoke(data.revoke);
+			if (data.autoApprove) ZoteroAI.McpClients.setAutoApprove(data.autoApprove.id, data.autoApprove.on);
+			let created = data.create ? await ZoteroAI.McpClients.create(data.create) : null;
+			return { created, url: ZoteroAI.McpServer.url(), enabled: ZoteroAI.McpServer.isEnabled() };
+		});
+		// Plays the human for MCP approvals: list waiting requests, decide one, or shut down/restart.
+		E["/zotero-ai/test/approvals"] = endpoint(["POST"], async (data) => {
+			if (data.decide) return { decided: ZoteroAI.Approvals.decide(data.decide.id, data.decide.approved) };
+			if (data.timing) Object.assign(ZoteroAI.Approvals.timing, data.timing);
+			if (data.shutdown) {
+				ZoteroAI.McpServer.shutdown();
+				ZoteroAI.McpServer.startup();
+				return { restarted: true };
+			}
+			return { pending: ZoteroAI.Approvals.pending().map((op) => ({ id: op.id, clientId: op.clientId, tool: op.tool, description: op.description })) };
 		});
 		// The approval rule for every tool, with auto-approve off and on (compared with Android).
 		E["/zotero-ai/test/policy"] = endpoint(["POST"], async () => Object.fromEntries(ZoteroAI.Spec.tools.map((t) => [t.name, {

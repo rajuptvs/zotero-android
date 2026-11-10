@@ -475,6 +475,7 @@ ZoteroAI.Panel = class {
 				? check(S.autoApprove, state.autoApprove, (v) => this.session.setAutoApprove(v))
 				: check(S.autoAttach, state.autoAttachSelection, (v) => this.session.setAutoAttachSelection(v)),
 			signedIn ? h("button", { text: S.usage, onclick: () => Zotero.launchURL(ZoteroAI.Auth.USAGE_URL) }) : null,
+			h("button", { text: "Connect an agent (MCP)…", onclick: () => this.hooks.openConnect() }),
 			h("button", { text: S.differentAccount, onclick: () => this.session.signIn({ newAccount: true }) }),
 			signedIn ? h("button", { text: S.signOut, onclick: () => this.session.signOut() }) : null);
 		this._menu.hidden = false;

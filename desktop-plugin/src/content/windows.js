@@ -72,6 +72,7 @@ ZoteroAI.Windows = {
 		pane.style.maxWidth = "70vw";
 		let panel = new ZoteroAI.Panel(doc, {
 			close: () => this.setOpen(win, false),
+			openConnect: () => ZoteroAI.ConnectDialog.open(win),
 			attachPage: () => this._capturePage(win),
 			selectArea: () => this._captureArea(win),
 		});
@@ -88,9 +89,17 @@ ZoteroAI.Windows = {
 		let toolbar = doc.getElementById("zotero-tabs-toolbar");
 		toolbar?.append(button);
 
-		let entry = { panel, pane, splitter, button };
+		// Tools → Connect an agent… (MCP), reachable without opening the panel or signing in.
+		let toolsMenuItem = doc.createXULElement("menuitem");
+		toolsMenuItem.id = "zotero-ai-connect-agent";
+		toolsMenuItem.setAttribute("label", "Zotero AI: Connect an agent…");
+		toolsMenuItem.addEventListener("command", () => ZoteroAI.ConnectDialog.open(win));
+		doc.getElementById("menu_ToolsPopup")?.append(toolsMenuItem);
+
+		let entry = { panel, pane, splitter, button, toolsMenuItem };
 		this._windows.set(win, entry);
 		this.setOpen(win, !!ZoteroAI.pref("panelOpen"));
+		ZoteroAI.ApprovalSheet?.windowsChanged();
 	},
 
 	remove(win) {
@@ -101,7 +110,10 @@ ZoteroAI.Windows = {
 		entry.pane.remove();
 		entry.splitter.remove();
 		entry.button.remove();
+		entry.toolsMenuItem.remove();
 		this._windows.delete(win);
+		if (ZoteroAI.ConnectDialog._open?.win === win) ZoteroAI.ConnectDialog.close();
+		ZoteroAI.ApprovalSheet?.windowsChanged();
 	},
 
 	isOpen(win) {

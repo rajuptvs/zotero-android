@@ -33,6 +33,26 @@ ZoteroAI.Spec = {
 		return this.tool(name)?.["x-write"] === true;
 	},
 
+	/**
+	 * The MCP tool list for a client (ai/spec/mcp.md): read-scope clients get the read tools, write
+	 * clients everything. Nullable properties aren't required, since MCP clients may omit them.
+	 */
+	mcpTools(scope) {
+		return this.tools
+			.filter((t) => scope == "write" || (!t["x-write"] && !t["x-mcp-only"]))
+			.map((t) => {
+				let schema = JSON.parse(JSON.stringify(t.parameters || { type: "object", properties: {} }));
+				let props = schema.properties || {};
+				schema.required = (schema.required || []).filter((k) => ![].concat(props[k]?.type || []).includes("null"));
+				return {
+					name: t.name,
+					description: t.description,
+					inputSchema: schema,
+					annotations: { readOnlyHint: t["x-write"] !== true, destructiveHint: t["x-always-ask"] === true },
+				};
+			});
+	},
+
 	/** Whether a call needs the user's decision (ai/spec/tools.md, "Write tools"). */
 	shouldAsk(name, autoApprove) {
 		let tool = this.tool(name);

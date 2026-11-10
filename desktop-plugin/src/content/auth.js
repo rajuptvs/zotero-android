@@ -133,8 +133,14 @@ ZoteroAI.Auth = {
 			}
 			let login = Cc["@mozilla.org/login-manager/loginInfo;1"].createInstance(Ci.nsILoginInfo);
 			login.init(this.LOGIN_ORIGIN, null, this.LOGIN_REALM, name, stored, "", "");
-			// Add the new login before removing the old one, so a failure never loses both.
-			await Services.logins.addLoginAsync(login);
+			// Replace in place: the login manager refuses a second login with the same name, and
+			// modifyLogin keeps the old value if writing the new one fails.
+			if (old.length) {
+				Services.logins.modifyLogin(old.shift(), login);
+			}
+			else {
+				await Services.logins.addLoginAsync(login);
+			}
 		}
 		for (let login of old) Services.logins.removeLogin(login);
 	},
