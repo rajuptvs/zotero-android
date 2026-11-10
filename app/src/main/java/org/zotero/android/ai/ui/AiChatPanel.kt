@@ -67,6 +67,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
+import com.mikepenz.markdown.compose.components.markdownComponents
+import com.mikepenz.markdown.compose.elements.highlightedCodeBlock
+import com.mikepenz.markdown.compose.elements.highlightedCodeFence
 import androidx.compose.runtime.livedata.observeAsState
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -596,6 +599,8 @@ private fun AssistantMessage(text: String, stateKey: String, actions: (@Composab
             MathAnswer(blocks, stateKey)
         } else {
             val typography = chatTypography()
+            // Code blocks with syntax colors (multiplatform-markdown-renderer-code, Apache-2.0).
+            val codeComponents = markdownComponents(codeFence = highlightedCodeFence, codeBlock = highlightedCodeBlock)
             SelectionContainer {
                 Column(modifier = Modifier.fillMaxWidth()) {
                     blocks.forEachIndexed { index, block ->
@@ -603,6 +608,7 @@ private fun AssistantMessage(text: String, stateKey: String, actions: (@Composab
                             Markdown(
                                 content = block,
                                 typography = typography,
+                                components = codeComponents,
                                 modifier = Modifier.fillMaxWidth(),
                             )
                         }

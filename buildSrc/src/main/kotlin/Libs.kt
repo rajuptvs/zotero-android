@@ -66,6 +66,7 @@ object Libs {
 
     object Markdown {
         const val composeRenderer = "com.mikepenz:multiplatform-markdown-renderer-m3:0.46.0"
+        const val composeRendererCode = "com.mikepenz:multiplatform-markdown-renderer-code:0.46.0"
         private const val commonmarkVersion = "0.31.0"
         const val commonmark = "org.commonmark:commonmark:$commonmarkVersion"
         const val commonmarkTables = "org.commonmark:commonmark-ext-gfm-tables:$commonmarkVersion"

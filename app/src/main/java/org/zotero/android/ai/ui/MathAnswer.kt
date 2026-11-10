@@ -20,6 +20,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color as ComposeColor
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -43,7 +44,7 @@ internal fun MathAnswer(blocks: List<String>, stateKey: String, modifier: Modifi
     val colors = MaterialTheme.colorScheme
     val textSize = MaterialTheme.typography.bodyMedium.fontSize.value
     val page = remember(colors, textSize) {
-        mathPage(colors.onSurface, colors.primary, colors.surfaceVariant, colors.outlineVariant, textSize)
+        mathPage(colors.onSurface, colors.primary, colors.surfaceVariant, colors.outlineVariant, textSize, dark = colors.surface.luminance() < 0.5f)
     }
     val htmlBlocks = remember(blocks) { blocks.map(ChatMarkdown::toHtml) }
     var heightDp by rememberSaveable(stateKey) { mutableIntStateOf(0) }
@@ -148,6 +149,7 @@ private fun mathPage(
     codeBackground: ComposeColor,
     border: ComposeColor,
     textSizeSp: Float,
+    dark: Boolean,
 ): String {
     fun css(color: ComposeColor) = String.format("#%06X", color.toArgb() and 0xFFFFFF)
     return """<!doctype html><html><head><meta charset="utf-8">
@@ -166,9 +168,11 @@ blockquote { margin: 0 0 8px; padding-left: 10px; border-left: 3px solid ${css(b
 ul, ol { margin: 0 0 8px; padding-left: 22px; }
 math { font-size: 1.1em; }
 math[display="block"] { display: block; overflow-x: auto; margin: 6px 0; }
+${if (dark) CODE_THEME_DARK else CODE_THEME_LIGHT}
 </style></head><body>
 <div id="answer"></div>
 <script src="katex.min.js"></script>
+<script src="highlight.min.js"></script>
 <script>
 const shown = []; // [{html, el}] in order
 function typeset(root) {
@@ -184,6 +188,14 @@ function typeset(root) {
     }
   }
 }
+// Syntax colors for code whose fence has closed (highlight.js, BSD-3-Clause).
+function highlight(root) {
+  for (const el of root.querySelectorAll("pre:not(.math) > code[class*='language-']")) {
+    const lang = (el.className.match(/language-([\w+-]+)/) || [])[1];
+    if (!lang || !hljs.getLanguage(lang) || el.textContent.length > 20000) continue;
+    el.innerHTML = hljs.highlight(el.textContent, { language: lang, ignoreIllegals: true }).value;
+  }
+}
 // Replaces only the blocks whose HTML changed; finished blocks keep their typeset math.
 function setBlocks(blocks) {
   const answer = document.getElementById("answer");
@@ -192,6 +204,8 @@ function setBlocks(blocks) {
     const el = document.createElement("div");
     el.innerHTML = html;
     typeset(el);
+    // The last block may still be streaming; colour its code once a later block exists.
+    if (i < blocks.length - 1) highlight(el);
     if (shown[i]) shown[i].el.replaceWith(el);
     else answer.appendChild(el);
     shown[i] = { html, el };
@@ -203,3 +217,7 @@ const report = () => AiChat.height(Math.ceil(document.documentElement.getBoundin
 new ResizeObserver(report).observe(document.body);
 </script></body></html>"""
 }
+
+// Code colors (GitHub-like) for highlight.js classes; same palette as the desktop panel.
+private const val CODE_THEME_LIGHT = ".hljs-keyword,.hljs-selector-tag,.hljs-doctag{color:#cf222e}.hljs-string,.hljs-regexp,.hljs-meta .hljs-string{color:#0a3069}.hljs-number,.hljs-literal,.hljs-attr,.hljs-attribute,.hljs-variable,.hljs-template-variable,.hljs-property{color:#0550ae}.hljs-comment,.hljs-quote,.hljs-meta{color:#6e7781;font-style:italic}.hljs-title,.hljs-section,.hljs-function .hljs-title{color:#8250df}.hljs-built_in,.hljs-type,.hljs-symbol{color:#953800}"
+private const val CODE_THEME_DARK = ".hljs-keyword,.hljs-selector-tag,.hljs-doctag{color:#ff7b72}.hljs-string,.hljs-regexp,.hljs-meta .hljs-string{color:#a5d6ff}.hljs-number,.hljs-literal,.hljs-attr,.hljs-attribute,.hljs-variable,.hljs-template-variable,.hljs-property{color:#79c0ff}.hljs-comment,.hljs-quote,.hljs-meta{color:#8b949e;font-style:italic}.hljs-title,.hljs-section,.hljs-function .hljs-title{color:#d2a8ff}.hljs-built_in,.hljs-type,.hljs-symbol{color:#ffa657}"

@@ -341,11 +341,14 @@ ZoteroAI.Panel = class {
 			return;
 		}
 		let old = this._streamBlocks || [];
-		this._streamBlocks = (ZoteroAI.Notes.splitBlocks(text) || [text]).map((src, i) => {
-			if (old[i]?.src === src) return old[i];
+		let sources = ZoteroAI.Notes.splitBlocks(text) || [text];
+		this._streamBlocks = sources.map((src, i) => {
+			// The last block may still be streaming: color its code once a later block exists.
+			let last = i == sources.length - 1;
+			if (old[i]?.src === src && old[i].highlighted === !last) return old[i];
 			let node = this._h("div", { class: "zai-markdown" });
-			this._setMarkdown(node, src);
-			return { src, node };
+			this._setMarkdown(node, src, { highlight: !last });
+			return { src, node, highlighted: !last };
 		});
 		this._streaming.replaceChildren(...[this._activity(activity)].filter(Boolean), ...this._streamBlocks.map((b) => b.node));
 	}
@@ -446,10 +449,11 @@ ZoteroAI.Panel = class {
 	 * The main window is an XML document, where innerHTML would use the XML parser and throw on
 	 * <br>, <hr> or &nbsp;. Parse as HTML and import the nodes; fall back to plain text.
 	 */
-	_setMarkdown(el, markdown) {
+	_setMarkdown(el, markdown, { highlight = true } = {}) {
 		try {
 			let doc = new DOMParser().parseFromString(`<body>${ZoteroAI.Notes.toHTML(markdown)}</body>`, "text/html");
 			this._typesetMath(doc);
+			if (highlight) this._highlightCode(doc);
 			el.replaceChildren(...[...doc.body.childNodes].map((n) => this.doc.importNode(n, true)));
 		}
 		catch (e) {
@@ -476,6 +480,19 @@ ZoteroAI.Panel = class {
 			catch (e) {
 				// Unsupported TeX: keep the source.
 			}
+		}
+	}
+
+	/** Syntax colors for fenced code with a known language (highlight.js, BSD-3-Clause). */
+	_highlightCode(doc) {
+		for (let el of doc.querySelectorAll("pre:not(.math) > code[class*='language-']")) {
+			let lang = (el.className.match(/language-([\w+-]+)/) || [])[1];
+			if (!lang || !hljs.getLanguage(lang) || el.textContent.length > 20000) continue;
+			try {
+				// hljs escapes the code; the result is spans with hljs-* classes.
+				el.innerHTML = hljs.highlight(el.textContent, { language: lang, ignoreIllegals: true }).value;
+			}
+			catch (e) {}
 		}
 	}
 
@@ -551,6 +568,8 @@ ZoteroAI.PANEL_CSS = `
 .zai-markdown table { border-collapse: collapse; display: block; overflow-x: auto; max-width: 100%; }
 .zai-markdown img { max-width: 100%; }
 .zai-markdown math { font-size: 1.1em; }
+.zai-markdown .hljs-keyword,.zai-markdown .hljs-selector-tag,.zai-markdown .hljs-doctag{color:#cf222e}.zai-markdown .hljs-string,.zai-markdown .hljs-regexp,.zai-markdown .hljs-meta .hljs-string{color:#0a3069}.zai-markdown .hljs-number,.zai-markdown .hljs-literal,.zai-markdown .hljs-attr,.zai-markdown .hljs-attribute,.zai-markdown .hljs-variable,.zai-markdown .hljs-template-variable,.zai-markdown .hljs-property{color:#0550ae}.zai-markdown .hljs-comment,.zai-markdown .hljs-quote,.zai-markdown .hljs-meta{color:#6e7781;font-style:italic}.zai-markdown .hljs-title,.zai-markdown .hljs-section,.zai-markdown .hljs-function .hljs-title{color:#8250df}.zai-markdown .hljs-built_in,.zai-markdown .hljs-type,.zai-markdown .hljs-symbol{color:#953800}
+@media (prefers-color-scheme: dark) { .zai-markdown .hljs-keyword,.zai-markdown .hljs-selector-tag,.zai-markdown .hljs-doctag{color:#ff7b72}.zai-markdown .hljs-string,.zai-markdown .hljs-regexp,.zai-markdown .hljs-meta .hljs-string{color:#a5d6ff}.zai-markdown .hljs-number,.zai-markdown .hljs-literal,.zai-markdown .hljs-attr,.zai-markdown .hljs-attribute,.zai-markdown .hljs-variable,.zai-markdown .hljs-template-variable,.zai-markdown .hljs-property{color:#79c0ff}.zai-markdown .hljs-comment,.zai-markdown .hljs-quote,.zai-markdown .hljs-meta{color:#8b949e;font-style:italic}.zai-markdown .hljs-title,.zai-markdown .hljs-section,.zai-markdown .hljs-function .hljs-title{color:#d2a8ff}.zai-markdown .hljs-built_in,.zai-markdown .hljs-type,.zai-markdown .hljs-symbol{color:#ffa657} }
 .zai-math-block { display: block; overflow-x: auto; margin: 6px 0; }
 .zai-markdown td, .zai-markdown th { border: 1px solid var(--fill-quinary, #ccc); padding: 2px 6px; }
 .zai-activity { margin: 0 0 6px; padding-left: 16px; font-size: 12px; opacity: .75; }

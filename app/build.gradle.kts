@@ -180,6 +180,7 @@ dependencies {
 
     //AI chat: Markdown answers in the panel, Markdown -> HTML for notes
     implementation(Libs.Markdown.composeRenderer)
+    implementation(Libs.Markdown.composeRendererCode)
     implementation(Libs.Markdown.commonmark)
     implementation(Libs.Markdown.commonmarkTables)
     implementation(Libs.Markdown.commonmarkStrikethrough)

@@ -12,6 +12,7 @@ async function startup({ id, version, rootURI }) {
 	Cu.importGlobalProperties(["fetch", "AbortController", "TextDecoder", "TextEncoder", "URL", "URLSearchParams", "crypto", "btoa", "atob", "DOMParser", "XMLSerializer"]);
 	Services.scriptloader.loadSubScript(rootURI + "content/vendor/marked.umd.js");
 	Services.scriptloader.loadSubScript(rootURI + "content/vendor/katex.min.js");
+	Services.scriptloader.loadSubScript(rootURI + "content/vendor/highlight.min.js");
 	for (let file of ["util", "spec", "notes", "approvals", "tools", "auth", "api", "chat", "capture", "panel", "mcpClients", "mcpServer", "approvalSheet", "connectDialog", "windows", "main"]) {
 		Services.scriptloader.loadSubScript(rootURI + `content/${file}.js`);
 	}
