@@ -1,5 +1,6 @@
 package org.zotero.android.architecture.navigation.phone
 
+import org.zotero.android.screens.reader.restoreReaderIfNeeded
 import androidx.activity.compose.LocalOnBackPressedDispatcherOwner
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -76,6 +77,9 @@ internal fun DashboardRootPhoneNavigation(
     val dispatcher = LocalOnBackPressedDispatcherOwner.current?.onBackPressedDispatcher
     val navigation = remember(navController) {
         ZoteroNavigation(navController, dispatcher)
+    }
+    LaunchedEffect(navigation) {
+        navigation.restoreReaderIfNeeded()
     }
 
 

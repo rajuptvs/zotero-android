@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="reader_chat_ask_ai">Ask AI</string>
+    <string name="reader_chat_sign_in_title">Chat about what you\'re reading</string>
+    <string name="reader_chat_sign_in_body">Ask questions about this document, get explanations of selected passages, and keep the conversation as a note that syncs to your other devices. Requests use your ChatGPT plan.</string>
+    <string name="reader_chat_continue_with_chatgpt">Continue with ChatGPT</string>
+    <string name="reader_chat_signing_in">Finish signing in in your browser…</string>
+    <string name="reader_chat_plan_usage_disabled">ChatGPT plan usage wasn\'t enabled for Zotero. Sign in again and allow it to use your plan.</string>
+    <string name="reader_chat_input_hint">Ask about this document</string>
+    <string name="reader_chat_send">Send</string>
+    <string name="reader_chat_new_chat">New chat</string>
+    <string name="reader_chat_sign_out">Sign out of ChatGPT</string>
+    <string name="reader_chat_quote_label">Text selection</string>
+    <string name="reader_chat_empty">Ask anything about this document. Select text to ask about a passage, or tap + to send the page or a figure as an image.</string>
+    <string name="reader_chat_reading_document">Reading the document…</string>
+    <string name="reader_chat_not_saved">This chat isn\'t saved: the document has no parent item or the library is read-only.</string>
+    <string name="reader_chat_cancel">Cancel</string>
+    <string name="reader_chat_usage">ChatGPT usage</string>
+    <string name="reader_chat_different_account">Sign in with a different account</string>
+    <string name="reader_chat_model">Model</string>
+    <string name="reader_chat_title">Ask AI</string>
+    <string name="reader_chat_history">Chat history</string>
+    <string name="reader_chat_history_empty">No saved chats for this document</string>
+    <string name="reader_chat_auto_attach">Attach selected text</string>
+    <string name="reader_chat_close">Close AI panel</string>
+    <string name="reader_chat_thinking">Thinking…</string>
+    <string name="reader_chat_writing">Writing the answer…</string>
+    <string name="reader_chat_copy">Copy</string>
+    <string name="reader_chat_save_as_note">Save as note</string>
+    <string name="reader_chat_saved_note">Saved</string>
+    <string name="reader_chat_explain_again">Explain again</string>
+    <string name="reader_chat_attach">Attach</string>
+    <string name="reader_chat_attach_page">This page (image)</string>
+    <string name="reader_chat_attach_area">Select an area (image)</string>
+    <string name="reader_chat_stop">Stop</string>
+    <string name="reader_chat_reasoning">Reasoning effort</string>
+    <string name="reader_chat_capture_hint">Drag over a figure or passage to send it</string>
+    <string name="reader_chat_images_unsupported">This model can\'t read images</string>
+</resources>

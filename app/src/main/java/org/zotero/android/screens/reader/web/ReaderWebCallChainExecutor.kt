@@ -7,8 +7,10 @@ import com.google.gson.JsonArray
 import com.google.gson.JsonObject
 import com.google.gson.reflect.TypeToken
 import dagger.hilt.android.scopes.ViewModelScoped
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.suspendCancellableCoroutine
 import org.zotero.android.architecture.Defaults
 import org.zotero.android.architecture.Result
@@ -27,6 +29,8 @@ import org.zotero.android.translator.helper.TranslatorHelper.encodeAsJSONForJava
 import org.zotero.android.translator.helper.TranslatorHelper.encodeStringToBase64Binary
 import timber.log.Timber
 import java.io.File
+import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import kotlin.coroutines.resume
 
@@ -42,6 +46,7 @@ class ReaderWebCallChainExecutor @Inject constructor(
     private val limitedParallelismDispatcher =
         dispatchers.io.limitedParallelism(1)
     private var webViewExecutorScope = CoroutineScope(limitedParallelismDispatcher)
+    private val pendingReadAloudSegments = ConcurrentHashMap<String, CompletableDeferred<JsonArray?>>()
 
     fun start(webView: WebView, file: File) {
         try {
@@ -305,6 +310,13 @@ class ReaderWebCallChainExecutor @Inject constructor(
                                     ReaderWebData.setViewStats(params)
                                 )
                             )
+                        }
+
+                        "onReadAloudSegments" -> {
+                            val params = data["params"].asJsonObject
+                            val requestId = params["requestID"]?.asString ?: return@launch
+                            val segments = params["segments"]?.takeIf { it.isJsonArray }?.asJsonArray
+                            pendingReadAloudSegments.remove(requestId)?.complete(segments)
                         }
 
                         "onReadingModeEnabled" -> {
@@ -680,6 +692,32 @@ class ReaderWebCallChainExecutor @Inject constructor(
             readerWebViewHandler.evaluateJavascript(javascript) {
                 cont.resume(Unit)
             }
+        }
+    }
+
+    /**
+     * Plain text of the open document, paragraph by paragraph, from the reader's structured
+     * document text. Requires [setSDTPack] to have been called. Null if the reader has no text.
+     */
+    suspend fun documentParagraphs(): List<String>? {
+        val requestId = UUID.randomUUID().toString()
+        val deferred = CompletableDeferred<JsonArray?>()
+        pendingReadAloudSegments[requestId] = deferred
+        try {
+            suspendCancellableCoroutine { cont ->
+                readerWebViewHandler.evaluateJavascript(
+                    "javascript:getReadAloudSegments({ granularity: 'paragraph', requestID: '$requestId' });"
+                ) {
+                    cont.resume(Unit)
+                }
+            }
+            val segments = withTimeoutOrNull(60_000) { deferred.await() } ?: return null
+            return segments.mapNotNull { segment ->
+                segment.takeIf { it.isJsonObject }?.asJsonObject?.get("text")
+                    ?.takeIf { it.isJsonPrimitive }?.asString
+            }
+        } finally {
+            pendingReadAloudSegments.remove(requestId)
         }
     }
 

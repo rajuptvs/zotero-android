@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- ChatGPT credentials are encrypted with a device-bound Keystore key and the host ID must be
+     unique per device, so neither may be restored onto another device. -->
+<full-backup-content>
+    <exclude domain="sharedpref" path="ChatGptAuth.xml" />
+</full-backup-content>

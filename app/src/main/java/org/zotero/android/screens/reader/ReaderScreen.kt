@@ -22,6 +22,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.livedata.observeAsState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalView
@@ -43,6 +44,7 @@ import org.zotero.android.screens.reader.search.ReaderSearchScreen
 import org.zotero.android.screens.reader.search.ReaderSearchViewModel
 import org.zotero.android.screens.reader.search.ReaderSearchViewState
 import org.zotero.android.screens.reader.settings.ReaderSettingsView
+import org.zotero.android.screens.reader.sidebar.chat.ReaderChatPanel
 import org.zotero.android.screens.reader.scrubber.ReaderScrubberViewModel
 import org.zotero.android.screens.reader.sidebar.annotations.ReaderAnnotationsViewModel
 import org.zotero.android.screens.reader.sidebar.thumbnails.ReaderThumbnailsViewModel
@@ -217,6 +219,10 @@ internal fun ReaderScreen(
 
             },
         ) {
+            ReaderAiSplitLayout(
+                showPanel = viewState.showAiPanel,
+                wide = LocalConfiguration.current.screenWidthDp >= 600,
+                reader = {
             when (viewState.fileType) {
                 ReaderFileType.PDF, ReaderFileType.HTML -> {
                     if (layoutType.isTablet()) {
@@ -251,6 +257,17 @@ internal fun ReaderScreen(
                 }
 
             }
+            if (viewState.areaCaptureActive) {
+                ReaderAreaCaptureOverlay(
+                    onCaptured = viewModel::onAreaCaptured,
+                    onCancel = viewModel::cancelAreaCapture,
+                )
+            }
+                },
+                panel = {
+                    ReaderChatPanel(readerViewModel = viewModel, readerViewState = viewState)
+                },
+            )
         }
         if (!layoutType.isTablet()) {
             AnimatedContent(

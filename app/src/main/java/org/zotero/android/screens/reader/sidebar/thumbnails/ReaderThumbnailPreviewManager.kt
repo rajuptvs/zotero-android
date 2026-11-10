@@ -197,7 +197,11 @@ class ReaderThumbnailPreviewManager @Inject constructor(
 
         val resultThumbnailCache = generateEmptySnapshot()
         cacheSnapshot.map {
-            resultThumbnailCache[it.key] = it.value
+            // Thumbnails can arrive before this reader knows the page count (or from a reader
+            // being replaced, e.g. after folding a foldable), so ignore pages outside the document.
+            if (it.key in resultThumbnailCache.indices) {
+                resultThumbnailCache[it.key] = it.value
+            }
         }
 
         pageToBitmapList.forEach {

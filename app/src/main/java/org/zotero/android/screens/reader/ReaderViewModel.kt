@@ -106,6 +106,7 @@ import org.zotero.android.screens.reader.sidebar.data.ReaderHistoryTrackingEvent
 import org.zotero.android.screens.reader.sidebar.data.ReaderRequestAnnotationImageRenderEventStream
 import org.zotero.android.screens.reader.sidebar.data.ReaderRequestThumbnailRenderEventStream
 import org.zotero.android.screens.reader.sidebar.data.ReaderScrollReaderIfNeededEvent
+import org.zotero.android.screens.reader.sidebar.chat.ReaderCapture
 import org.zotero.android.screens.reader.sidebar.data.ReaderSliderOptions
 import org.zotero.android.screens.reader.sidebar.data.ReaderWrapperOutline
 import org.zotero.android.screens.reader.web.ReaderCustomWebView
@@ -423,6 +424,9 @@ class ReaderViewModel @Inject constructor(
     fun initEveryTime(webView: ReaderCustomWebView) {
         restartDisableForceScreenOnTimer()
         this.readerWebView = webView
+        if (webCallChainJob != null && webCallChainJob?.isActive != true) {
+            setupWebCallChainEventStream()
+        }
         webView.selectionActionModeDelegate = object : ReaderSelectionActionModeDelegate {
             override fun hasValidSelection(): Boolean = viewState.selectedText != null
             override fun onHighlight() {
@@ -434,6 +438,10 @@ class ReaderViewModel @Inject constructor(
             }
 
             override fun onCopy(): Boolean = copySelectedTextToClipboard()
+
+            override fun onAskAi() {
+                this@ReaderViewModel.onAskAi()
+            }
         }
         readerWebCallChainExecutor.start(webView = webView, file = this.readerFile)
     }
@@ -449,6 +457,10 @@ class ReaderViewModel @Inject constructor(
         this.key = params.key
         this.parentKey = params.parentKey
         this.library = params.library
+        if (ReaderSessionRestore.consumePendingAiPanel()) {
+            updateState { copy(showAiPanel = true) }
+            ReaderSessionRestore.isAiPanelOpen = true
+        }
     }
 
 
@@ -457,7 +469,8 @@ class ReaderViewModel @Inject constructor(
         this.readerDirectory = fileStore.runningReaderDirectory()
         this.documentFile = fileStore.runningReaderUserFileSubDirectory(originalFile.extension)
         this.readerFile = File(readerDirectory, "view.html")
-
+        usesReaderFiles = true
+        readersUsingFiles.incrementAndGet()
     }
 
     private fun restartDisableForceScreenOnTimer() {
@@ -1610,16 +1623,36 @@ class ReaderViewModel @Inject constructor(
     }
 
     private fun deinitialiseReader() {
+        // A reader whose screen was replaced before its WebView was created never set anything up.
+        if (!usesReaderFiles) {
+            return
+        }
         lastReadWatcher.submit(key = this.key, libraryId = this.library.identifier, date = Date())
-        this.readerDirectory.deleteRecursively()
+        // Readers share one directory; when a fold/unfold replaces the reader, the old one is
+        // cleared after the new one has copied its files in, so only the last one deletes it.
+        if (readersUsingFiles.decrementAndGet() == 0) {
+            this.readerDirectory.deleteRecursively()
+        }
     }
 
     fun setupWebCallChainEventStream() {
-        webCallChainEventStream.flow()
+        webCallChainJob?.cancel()
+        webCallChainJob = webCallChainEventStream.flow()
             .onEach { result ->
                 process(result)
             }
             .launchIn(viewModelScope)
+    }
+
+    /**
+     * The event stream is shared by every reader, so a reader whose WebView is gone (e.g. one left
+     * behind when folding swapped the navigation tree) must stop reacting to another reader's
+     * events.
+     */
+    fun onWebViewReleased(webView: ReaderCustomWebView) {
+        if (readerWebView !== webView) return
+        readerWebView = null
+        webCallChainJob?.cancel()
     }
 
     private suspend fun process(result: Result<ReaderWebData>) {
@@ -2564,6 +2597,131 @@ class ReaderViewModel @Inject constructor(
     }
 
     private var didSetSDTPack = false
+    private var webCallChainJob: Job? = null
+    private var usesReaderFiles = false
+    private val sdtPackMutex = Mutex()
+    private var chatDocumentText: String? = null
+    private var chatDocumentTextUnavailable = false
+
+    private suspend fun ensureSDTPack() = sdtPackMutex.withLock {
+        if (didSetSDTPack) {
+            return@withLock
+        }
+        val pack = documentWorkerController.getOrGenerateSDTPack(
+            file = this@ReaderViewModel.originalFile,
+            contentType = when (viewState.fileType) {
+                ReaderFileType.PDF -> "application/pdf"
+                ReaderFileType.EPUB -> "application/epub+zip"
+                ReaderFileType.HTML -> "text/html"
+            },
+            onProgress = { progress ->
+                Timber.i("ReaderViewModel: SDT generation progress: $progress")
+            },
+        )
+        readerWebCallChainExecutor.setSDTPack(
+            bytesBase64 = android.util.Base64.encodeToString(
+                pack.bytes,
+                android.util.Base64.NO_WRAP
+            ),
+            packVersion = pack.packVersion,
+            schemaMajorVersion = pack.schemaMajorVersion,
+        )
+        didSetSDTPack = true
+    }
+
+    /** What the chat panel needs to know about the open document. */
+    suspend fun chatContext(includeDocumentText: Boolean): ReaderChatContext {
+        val text = if (!includeDocumentText || chatDocumentTextUnavailable) {
+            null
+        } else chatDocumentText ?: try {
+            ensureSDTPack()
+            readerWebCallChainExecutor.documentParagraphs()
+                ?.joinToString("\n\n")
+                ?.also { chatDocumentText = it }
+                ?: null.also { chatDocumentTextUnavailable = true }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            // Don't retry (and stall) on every message; the chat works without the full text.
+            Timber.e(e, "ReaderViewModel: can't read document text for chat")
+            chatDocumentTextUnavailable = true
+            null
+        }
+        return ReaderChatContext(
+            attachmentKey = this.key,
+            parentKey = this.parentKey,
+            library = this.library,
+            pageProgress = viewState.pageProgress,
+            documentText = text,
+        )
+    }
+
+    fun onAskAi() {
+        val text = viewState.selectedText ?: return
+        updateState {
+            copy(chatQuote = text, showAiPanel = true)
+        }
+        ReaderSessionRestore.isAiPanelOpen = true
+        viewModelScope.launch {
+            readerWebCallChainExecutor.deselectText()
+        }
+    }
+
+    fun consumeChatQuote() {
+        updateState {
+            copy(chatQuote = null)
+        }
+    }
+
+    fun toggleAiPanel() {
+        updateState {
+            copy(showAiPanel = !showAiPanel, areaCaptureActive = false)
+        }
+        ReaderSessionRestore.isAiPanelOpen = viewState.showAiPanel
+    }
+
+    /** "Page 3" from "Page 3 (6%)", for labelling captured images. */
+    private fun currentLocationLabel(): String =
+        viewState.pageProgress?.substringBefore(" (") ?: "the current view"
+
+    /** Captures what's visible in the reader and hands it to the chat as an image. */
+    fun attachCurrentPageToChat() {
+        val webView = readerWebView ?: return
+        viewModelScope.launch {
+            val bitmap = ReaderCapture.capture(webView)
+            if (bitmap == null) {
+                Timber.e("ReaderViewModel: page capture failed")
+                return@launch
+            }
+            val image = ReaderCapture.toChatImage(bitmap, label = currentLocationLabel())
+            updateState { copy(chatImage = image) }
+        }
+    }
+
+    fun startAreaCapture() {
+        updateState { copy(areaCaptureActive = true) }
+    }
+
+    fun cancelAreaCapture() {
+        updateState { copy(areaCaptureActive = false) }
+    }
+
+    /** [areaInWindow] is the rectangle the user dragged over the reader, in window pixels. */
+    fun onAreaCaptured(areaInWindow: android.graphics.Rect) {
+        updateState { copy(areaCaptureActive = false) }
+        val webView = readerWebView ?: return
+        viewModelScope.launch {
+            // Let the selection overlay disappear before copying the pixels underneath it.
+            kotlinx.coroutines.delay(150)
+            val bitmap = ReaderCapture.capture(webView, areaInWindow) ?: return@launch
+            val image = ReaderCapture.toChatImage(bitmap, label = "area on ${currentLocationLabel()}")
+            updateState { copy(chatImage = image) }
+        }
+    }
+
+    fun consumeChatImage() {
+        updateState { copy(chatImage = null) }
+    }
 
     fun toggleReadingMode() {
         val enable = !viewState.readingModeEnabled
@@ -2579,21 +2737,7 @@ class ReaderViewModel @Inject constructor(
                     updateState {
                         copy(readingModeLoading = true)
                     }
-                    val pack = documentWorkerController.getOrGenerateSDTPack(
-                        file = this@ReaderViewModel.originalFile,
-                        onProgress = { progress ->
-                            Timber.i("ReaderViewModel: SDT generation progress: $progress")
-                        },
-                    )
-                    readerWebCallChainExecutor.setSDTPack(
-                        bytesBase64 = android.util.Base64.encodeToString(
-                            pack.bytes,
-                            android.util.Base64.NO_WRAP
-                        ),
-                        packVersion = pack.packVersion,
-                        schemaMajorVersion = pack.schemaMajorVersion,
-                    )
-                    didSetSDTPack = true
+                    ensureSDTPack()
                     updateState {
                         copy(readingModeLoading = false)
                     }
@@ -2826,6 +2970,10 @@ data class ReaderViewState(
     val readingModeLoading: Boolean = false,
     val canUndo: Boolean = false,
     val canRedo: Boolean = false,
+    val chatQuote: String? = null,
+    val chatImage: org.zotero.android.ai.api.ChatImage? = null,
+    val showAiPanel: Boolean = false,
+    val areaCaptureActive: Boolean = false,
     ) : ViewState {
     fun isAnnotationSelected(annotationKey: String): Boolean {
         return this.selectedAnnotationKey == annotationKey
@@ -2866,3 +3014,13 @@ sealed class ReaderViewEffect : ViewEffect {
     data class OpenWebpage(val url: String) : ReaderViewEffect()
     data class OnPageChanged(val currentPage: Int) : ReaderViewEffect()
 }
+
+data class ReaderChatContext(
+    val attachmentKey: String,
+    val parentKey: String?,
+    val library: Library,
+    val pageProgress: String?,
+    val documentText: String?,
+)
+
+private val readersUsingFiles = java.util.concurrent.atomic.AtomicInteger(0)

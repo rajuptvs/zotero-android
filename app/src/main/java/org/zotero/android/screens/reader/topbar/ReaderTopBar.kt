@@ -6,6 +6,9 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.PlainTooltip
@@ -129,6 +132,21 @@ internal fun ReaderTopBar(
             }
 
             Spacer(modifier = Modifier.weight(1f))
+            IconButton(onClick = viewModel::toggleAiPanel) {
+                Icon(
+                    imageVector = if (viewState.showAiPanel) {
+                        Icons.Filled.AutoAwesome
+                    } else {
+                        Icons.Outlined.AutoAwesome
+                    },
+                    contentDescription = safeStringResource(Strings.reader_chat_title),
+                    tint = if (viewState.showAiPanel) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        MaterialTheme.colorScheme.onSurface
+                    },
+                )
+            }
             TooltipBox(
                 positionProvider = rememberTooltipPositionProvider(
                     TooltipAnchorPosition.Below,

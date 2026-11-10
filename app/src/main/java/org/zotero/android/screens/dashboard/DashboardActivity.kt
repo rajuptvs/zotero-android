@@ -1,5 +1,9 @@
 package org.zotero.android.screens.dashboard
 
+import androidx.compose.runtime.key
+import org.zotero.android.screens.reader.ReaderSessionRestore
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
@@ -156,6 +160,14 @@ internal class DashboardActivity : BaseActivity() {
                         }
                         if (viewState.initialLoadData != null) {
                             val layoutType = CustomLayoutSize.calculateLayoutType()
+                            // Folding or unfolding swaps the navigation tree below; remember the
+                            // open document so the new tree can reopen it.
+                            val shownLayoutIsTablet = remember { mutableStateOf(layoutType.isTablet()) }
+                            if (shownLayoutIsTablet.value != layoutType.isTablet()) {
+                                ReaderSessionRestore.onLayoutTypeChanged()
+                                shownLayoutIsTablet.value = layoutType.isTablet()
+                            }
+                            key(ReaderSessionRestore.navigationGeneration) {
                             if (layoutType.isTablet()) {
                                 DashboardRootTopLevelTabletNavigation(
                                     collectionDefaultValue = collectionDefaultValue,
@@ -180,6 +192,7 @@ internal class DashboardActivity : BaseActivity() {
                                     onExportHtml = onExportHtml,
                                     onExitApp = { finish() }
                                 )
+                            }
                             }
                             DashboardTopLevelDialogs(viewState = viewState, viewModel = viewModel)
                             SyncToolbarScreen()

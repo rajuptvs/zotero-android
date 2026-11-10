@@ -1,6 +1,8 @@
 
 package org.zotero.android.architecture.navigation.tablet
 
+import org.zotero.android.screens.reader.restoreReaderIfNeeded
+import androidx.compose.runtime.LaunchedEffect
 import androidx.activity.compose.LocalOnBackPressedDispatcherOwner
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
@@ -47,6 +49,9 @@ internal fun DashboardRootTopLevelTabletNavigation(
     val dispatcher = LocalOnBackPressedDispatcherOwner.current?.onBackPressedDispatcher
     val navigation = remember(navController) {
         ZoteroNavigation(navController, dispatcher)
+    }
+    LaunchedEffect(navigation) {
+        navigation.restoreReaderIfNeeded()
     }
 
     ZoteroNavHost(

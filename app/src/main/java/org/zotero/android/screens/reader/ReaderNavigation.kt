@@ -1,6 +1,10 @@
 
 package org.zotero.android.screens.reader
 
+import androidx.navigation.NavBackStackEntry
+import android.content.ContextWrapper
+import android.content.Context
+import android.app.Activity
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.width
 import androidx.compose.ui.Modifier
@@ -178,12 +182,52 @@ fun ZoteroNavigation.toReaderScreen(
     if (readerEntry.destination.route != ReaderDestinations.READER_SCREEN_ROUTE) {
         return
     }
+    trackReaderSession(readerEntry, readerParams, readerEncodedFilePathParam)
+}
+
+private fun ZoteroNavigation.trackReaderSession(
+    readerEntry: NavBackStackEntry,
+    readerParams: String,
+    readerEncodedFilePathParam: String,
+) {
     isReaderSessionOpen = true
+    ReaderSessionRestore.onReaderOpened(readerParams, readerEncodedFilePathParam)
+    val activity = navController.context.findActivity()
     readerEntry.lifecycle.addObserver(LifecycleEventObserver { _, event ->
         if (event == Lifecycle.Event.ON_DESTROY) {
             isReaderSessionOpen = false
+            if (activity?.isChangingConfigurations == true) {
+                // Recreated for a configuration change (e.g. a foldable's density changing).
+                ReaderSessionRestore.onLayoutTypeChanged()
+            } else {
+                ReaderSessionRestore.onReaderClosed()
+            }
         }
     })
+}
+
+/**
+ * Reopens the document that was open before the navigation tree was replaced (fold/unfold), unless
+ * this tree already restored it from its saved state.
+ */
+fun ZoteroNavigation.restoreReaderIfNeeded() {
+    val (readerParams, encodedFilePath) = ReaderSessionRestore.consumePendingReader() ?: return
+    val currentEntry = navController.currentBackStackEntry
+    if (currentEntry?.destination?.route == ReaderDestinations.READER_SCREEN_ROUTE) {
+        // This tree restored the reader from its saved state (and the reader already picked up
+        // the pending AI panel state while initializing); just keep tracking it.
+        trackReaderSession(currentEntry, readerParams, encodedFilePath)
+        return
+    }
+    // The previous tree is gone, so its reader session is over.
+    isReaderSessionOpen = false
+    toReaderScreen(readerParams = readerParams, readerEncodedFilePathParam = encodedFilePath)
+}
+
+private tailrec fun Context.findActivity(): Activity? = when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.findActivity()
+    else -> null
 }
 
 private fun ZoteroNavigation.toReaderAnnotationNavigation() {

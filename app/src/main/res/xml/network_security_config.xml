@@ -6,6 +6,14 @@
         <domain includeSubdomains="true">local</domain>
         <domain includeSubdomains="true">www.zotero.org</domain>
     </domain-config>
+    <!-- ChatGPT sign-in and API: bearer tokens, so trust system CAs only. -->
+    <domain-config>
+        <domain includeSubdomains="false">auth.openai.com</domain>
+        <domain includeSubdomains="false">api.openai.com</domain>
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </domain-config>
     <base-config>
         <trust-anchors>
             <certificates src="system" />

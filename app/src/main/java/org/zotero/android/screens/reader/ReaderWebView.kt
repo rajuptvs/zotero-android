@@ -31,6 +31,7 @@ fun ReaderWebView(viewModel: ReaderViewModel) {
         update = {
         },
         onRelease = { webView ->
+            viewModel.onWebViewReleased(webView)
             webView.destroy()
         }
     )

@@ -64,6 +64,15 @@ object Libs {
             "com.jakewharton.retrofit:retrofit2-kotlinx-serialization-converter:1.0.0"
     }
 
+    object Markdown {
+        const val composeRenderer = "com.mikepenz:multiplatform-markdown-renderer-m3:0.46.0"
+        private const val commonmarkVersion = "0.31.0"
+        const val commonmark = "org.commonmark:commonmark:$commonmarkVersion"
+        const val commonmarkTables = "org.commonmark:commonmark-ext-gfm-tables:$commonmarkVersion"
+        const val commonmarkStrikethrough =
+            "org.commonmark:commonmark-ext-gfm-strikethrough:$commonmarkVersion"
+    }
+
     object OkHttp {
         private const val version = "5.4.0"
         const val core = "com.squareup.okhttp3:okhttp:$version"

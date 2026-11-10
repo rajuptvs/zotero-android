@@ -5,4 +5,5 @@ interface ReaderSelectionActionModeDelegate {
     fun onHighlight()
     fun onUnderline()
     fun onCopy(): Boolean
+    fun onAskAi()
 }
