@@ -83,6 +83,35 @@ an item by DOI/ISBN/arXiv ID, or move items to the trash.
 
 Install: build `desktop-plugin/dist/zotero-ai.xpi` with `node desktop-plugin/scripts/build.mjs`, then in Zotero use **Tools → Plugins → ⚙ → Install Plugin From File**. See [`desktop-plugin/README.md`](desktop-plugin/README.md).
 
+## Use your library from any agent (MCP)
+
+The desktop plugin can also serve your library to AI agents such as **Claude Code** and **Codex**
+over MCP, so they can search, read and (with your approval) organize it while Zotero is running.
+You don't need the chat panel or a ChatGPT account for this.
+
+1. In Zotero 10: **Tools → Zotero AI: Connect an agent…**, turn on **Let agents use this library**,
+   and add an agent (read-only, or read and request changes).
+2. Copy the command it shows, for example:
+   ```bash
+   claude mcp add --transport http zotero http://127.0.0.1:23119/zotero-ai/mcp --header "Authorization: Bearer zai_…"
+   # or
+   export ZOTERO_AI_MCP_TOKEN=zai_…
+   codex mcp add zotero --url http://127.0.0.1:23119/zotero-ai/mcp --bearer-token-env-var ZOTERO_AI_MCP_TOKEN
+   ```
+3. Ask the agent about your library. It gets the same 15 tools as the chat panels, with the same
+   results.
+
+**Changes always come back to you.** When an agent asks to tag, file, create, add or trash
+something, Zotero shows a card with exactly what will change; nothing happens until you approve.
+The agent is told the change is waiting and picks up the result once you decide. The card never
+steals focus and ignores clicks during its first second, so a stray keystroke can't approve
+anything. You can let a trusted agent apply changes without asking (off by default); moving items
+to the trash always asks. Each agent has its own token, which you can revoke at any time.
+
+The server lives on Zotero's own local port (`127.0.0.1` only) and refuses requests from web pages.
+Clients that only speak stdio can use `npx mcp-remote <url> --header "Authorization: Bearer …"`.
+The protocol and guarantees are in [`ai/spec/mcp.md`](ai/spec/mcp.md).
+
 ## The same on every device
 
 Both clients are built from one spec in [`ai/spec/`](ai/spec): the tool definitions
@@ -94,9 +123,11 @@ synced library:
 - every read tool returns identical JSON on Android and desktop;
 - approval cards read the same for every kind of change;
 - conversation notes (including ones the desktop note editor has re-saved) are read back identically, and Markdown math becomes the same note markup;
-- changes made on one device are visible on the other after a sync.
+- changes made on one device are visible on the other after a sync;
+- both clients apply the same approval rule to every tool;
+- the MCP server lists exactly the spec's tools and returns the same results as the desktop and Android clients, and its approvals, retries, expiry, limits and token handling behave as `mcp.md` says.
 
-All 65 checks pass. Conversations were also tested by hand across devices: library chat started on desktop, continued on the phone (change approved), then continued on desktop (change declined), and synced back; reader chat about the same paper continued back and forth.
+All 122 checks pass. Conversations were also tested by hand across devices: library chat started on desktop, continued on the phone (change approved), then continued on desktop (change declined), and synced back; reader chat about the same paper continued back and forth.
 
 ### Compared with Zotero Agent (zotero-mcp's chat plugin)
 
@@ -108,6 +139,7 @@ All 65 checks pass. Conversations were also tested by hand across devices: libra
 | Model access | Your local agent CLI's login or API key | Sign in with ChatGPT in the app; no CLI, Node.js or Python needed |
 | Library tools | `zotero-cli` (via the agent's shell) | 15 built-in tools, run inside the Zotero client, identical on both platforms |
 | Writes | Agent permission cards; Zotero 10 needs `zotero-mcp authorize-local` | An approval card for every change, described in plain words |
+| Use from outside agents | Through zotero-mcp | Built-in MCP server in the desktop plugin, with the same tools and approvals in Zotero |
 | Conversations | Local history in the Zotero profile, resumable in the terminal | Zotero notes that sync, so a chat moves between phone and computer |
 | Extras it has that this doesn't | Agent's own tools (web, shell), skills, SVG diagrams, drag-in items, context-usage ring | — |
 
@@ -155,6 +187,7 @@ No PSPDFKit key is needed: PDFs, EPUBs and snapshots all open in Zotero's web-ba
 | Split layout, foldable session restore, page/area capture | `screens/reader/ReaderAiSplitLayout.kt`, `screens/reader/ReaderSessionRestore.kt`, `screens/reader/ReaderViewModel.kt` |
 | Library screen integration | `screens/allitems/` |
 | Desktop plugin | `desktop-plugin/src/content/` |
+| MCP server, approvals | `desktop-plugin/src/content/{mcpServer,mcpClients,approvals,approvalSheet,connectDialog}.js`, `ai/spec/mcp.md` |
 
 ---
 
