@@ -5,6 +5,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.navigationBars
@@ -60,11 +61,28 @@ internal fun ReaderAiSplitLayout(
     reader: @Composable () -> Unit,
     panel: @Composable () -> Unit,
 ) {
+    // Side by side only when both fit (320 dp panel + 280 dp content + handle); a narrow pane, like
+    // the item list next to the collections on an unfolded foldable, stacks instead.
+    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+        SplitLayout(showPanel, wide && maxWidth >= 616.dp, reader, panel)
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun SplitLayout(
+    showPanel: Boolean,
+    wide: Boolean,
+    reader: @Composable () -> Unit,
+    panel: @Composable () -> Unit,
+) {
     var sideFraction by rememberSaveable { mutableFloatStateOf(0.42f) }
     var stackedFraction by rememberSaveable { mutableFloatStateOf(0.5f) }
     var totalSize by remember { mutableStateOf(0f) }
     val imeVisible = WindowInsets.isImeVisible
     val handleThickness = with(LocalDensity.current) { 16.dp.roundToPx() }
+    val minPanelWidth = with(LocalDensity.current) { 320.dp.roundToPx() }
+    val minReaderWidth = with(LocalDensity.current) { 280.dp.roundToPx() }
 
     Layout(
         modifier = Modifier.fillMaxSize().imePadding(),
@@ -109,6 +127,7 @@ internal fun ReaderAiSplitLayout(
         }
         if (wide) {
             val panelWidth = ((width - handleThickness) * sideFraction).roundToInt()
+                .coerceIn(minPanelWidth, width - handleThickness - minReaderWidth)
             val readerWidth = width - handleThickness - panelWidth
             val readerPlaceable = readerMeasurables.first().measure(Constraints.fixed(readerWidth, height))
             val handle = handleMeasurables.firstOrNull()?.measure(Constraints.fixed(handleThickness, height))

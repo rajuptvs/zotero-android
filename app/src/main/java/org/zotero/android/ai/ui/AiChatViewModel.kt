@@ -293,6 +293,7 @@ internal class AiChatViewModel @Inject constructor(
                 liveActivity = emptyList(),
             )
         }
+        rememberLibraryChat()
     }
 
     fun openChat(entry: ChatHistoryEntry) {
@@ -306,7 +307,13 @@ internal class AiChatViewModel @Inject constructor(
                     streamingText = null, error = null, savedAnswers = emptySet(), phase = null,
                 )
             }
+            rememberLibraryChat()
         }
+    }
+
+    /** Keeps the library conversation across a fold/unfold (LibraryAiSessionRestore). */
+    private fun rememberLibraryChat() {
+        if (scope is AiChatScope.Library) LibraryAiSessionRestore.noteKey = viewState.noteKey
     }
 
     fun refreshHistory() {
@@ -628,7 +635,17 @@ internal class AiChatViewModel @Inject constructor(
         }
         val notes = readChatNotes()
         updateState { copy(history = notes.map(::historyEntry)) }
-        // Reader chats pick up where they left off; library chats start fresh.
+        // Library chats start fresh, unless a fold/unfold just recreated the screen mid-conversation.
+        if (scope is AiChatScope.Library) {
+            val key = LibraryAiSessionRestore.noteKey ?: return
+            val note = notes.firstOrNull { it.key == key } ?: return
+            if (viewState.turns.isEmpty()) {
+                noteHtml = note.html
+                updateState { copy(turns = ChatNoteFormat.decode(note.html), noteKey = note.key) }
+            }
+            return
+        }
+        // Reader chats pick up where they left off.
         if (scope is AiChatScope.Reader) {
             val latest = notes.firstOrNull() ?: return
             val turns = ChatNoteFormat.decode(latest.html)
@@ -721,6 +738,7 @@ internal class AiChatViewModel @Inject constructor(
             }
             noteHtml = html
             updateState { copy(noteKey = noteKey) }
+            rememberLibraryChat()
             if (existingKey == null) refreshHistory()
         } catch (e: Throwable) {
             if (e is CancellationException) throw e

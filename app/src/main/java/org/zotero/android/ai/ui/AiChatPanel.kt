@@ -262,6 +262,8 @@ private fun PanelHeader(
                 if (viewState.isLibrary) Strings.reader_chat_library_title else Strings.reader_chat_title
             ),
             style = MaterialTheme.typography.titleMedium,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
             modifier = Modifier.weight(1f),
         )
         if (signedIn?.planUsageEnabled == true) {

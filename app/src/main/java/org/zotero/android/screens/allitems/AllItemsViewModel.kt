@@ -207,6 +207,8 @@ internal class AllItemsViewModel @Inject constructor(
     }
 
     fun init(isTablet: Boolean) = initOnce {
+        // Reopen the AI panel after a fold/unfold recreated this screen.
+        if (org.zotero.android.ai.ui.LibraryAiSessionRestore.isPanelOpen) updateState { copy(showAiPanel = true) }
         viewModelScope.launch {
             this@AllItemsViewModel.isTablet = isTablet
             EventBus.getDefault().register(this@AllItemsViewModel)
@@ -378,6 +380,7 @@ internal class AllItemsViewModel @Inject constructor(
 
     fun toggleAiPanel() {
         updateState { copy(showAiPanel = !showAiPanel) }
+        org.zotero.android.ai.ui.LibraryAiSessionRestore.isPanelOpen = viewState.showAiPanel
     }
 
     /** Where the user is in the library, for the AI panel's context. */
