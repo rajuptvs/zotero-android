@@ -169,7 +169,7 @@ No PSPDFKit key is needed: PDFs, EPUBs and snapshots all open in Zotero's web-ba
 ## Known limitations
 
 - Images you send aren't stored in the synced note; they appear there as `[Image: …]`.
-- Math is typeset with [KaTeX](https://katex.org) in the panel on both platforms and in notes saved with **Save as note** (as Zotero note math). On Android it appears once an answer has finished; while the answer is still being written, formulas show as `$…$`. Full conversation notes keep the TeX source.
+- Math is typeset with [KaTeX](https://katex.org) in the panel on both platforms, as soon as each formula is complete while the answer streams, and in notes saved with **Save as note** (as Zotero note math). Full conversation notes keep the TeX source.
 - Conversation notes store one paragraph per line, so very elaborate formatting (nested lists, indented code) can come back simplified when a chat is reopened.
 - The library tools work on **My Library** only, on both platforms; group libraries aren't supported yet. While you're looking at a group library, the library assistant knows that and works on My Library. A reader chat about a paper in a group library is saved as a note on that paper, so the group's members can see it.
 - Sign in with ChatGPT for open-source apps is an OpenAI preview; its availability and limits may change.

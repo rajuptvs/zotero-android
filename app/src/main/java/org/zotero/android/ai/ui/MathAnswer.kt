@@ -3,7 +3,8 @@ package org.zotero.android.ai.ui
 import android.annotation.SuppressLint
 import android.content.Intent
 import android.graphics.Color
-import android.net.Uri
+import android.os.Handler
+import android.os.Looper
 import android.webkit.JavascriptInterface
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
@@ -22,24 +23,31 @@ import androidx.compose.ui.graphics.Color as ComposeColor
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import com.google.gson.Gson
 import org.zotero.android.ai.chat.ChatMarkdown
+import timber.log.Timber
 
 /**
  * An answer with math, typeset by KaTeX (assets/ai-chat, MIT) as MathML in a small WebView. The
- * HTML is ChatMarkdown's note HTML (raw HTML escaped, images as text), the same markup the
- * desktop panel typesets, so both show the same thing. The WebView loads nothing from the network.
+ * page loads once; the answer's blocks (ChatMarkdown.splitBlocks) are pushed into it as they
+ * stream, and only blocks whose text changed are replaced, so finished formulas stay typeset. The
+ * HTML is ChatMarkdown's note HTML (raw HTML escaped, images as text), the same markup the desktop
+ * panel typesets. The WebView loads nothing from the network.
+ *
+ * [stateKey] is the turn's list key: it stays the same when a streaming answer is saved, so the
+ * WebView and its measured height carry over.
  */
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
-internal fun MathAnswer(markdown: String, modifier: Modifier = Modifier) {
+internal fun MathAnswer(blocks: List<String>, stateKey: String, modifier: Modifier = Modifier) {
     val colors = MaterialTheme.colorScheme
     val textSize = MaterialTheme.typography.bodyMedium.fontSize.value
-    val page = remember(markdown, colors, textSize) {
-        mathPage(ChatMarkdown.toHtml(markdown), colors.onSurface, colors.primary, colors.surfaceVariant, colors.outlineVariant, textSize)
+    val page = remember(colors, textSize) {
+        mathPage(colors.onSurface, colors.primary, colors.surfaceVariant, colors.outlineVariant, textSize)
     }
-    // Remembered per answer so the list doesn't jump while the page measures itself again.
-    var heightDp by rememberSaveable(markdown) { mutableIntStateOf(0) }
-    val bridge = remember { HeightBridge() }
+    val htmlBlocks = remember(blocks) { blocks.map(ChatMarkdown::toHtml) }
+    var heightDp by rememberSaveable(stateKey) { mutableIntStateOf(0) }
+    val bridge = remember { MathBridge() }
     bridge.onHeight = { heightDp = it }
     AndroidView(
         modifier = modifier
@@ -55,6 +63,10 @@ internal fun MathAnswer(markdown: String, modifier: Modifier = Modifier) {
                 settings.blockNetworkLoads = true
                 addJavascriptInterface(bridge, "AiChat")
                 webViewClient = object : WebViewClient() {
+                    override fun onPageFinished(view: WebView, url: String?) {
+                        bridge.pageReady(view)
+                    }
+
                     override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
                         val url = request.url
                         if (url.scheme == "http" || url.scheme == "https" || url.scheme == "mailto") {
@@ -68,25 +80,69 @@ internal fun MathAnswer(markdown: String, modifier: Modifier = Modifier) {
         update = { webView ->
             if (webView.tag != page) {
                 webView.tag = page
+                bridge.pageLoading()
                 webView.loadDataWithBaseURL("file:///android_asset/ai-chat/", page, "text/html", "utf-8", null)
             }
+            bridge.push(webView, htmlBlocks)
         },
+        onRelease = { it.destroy() },
     )
 }
 
-/** Lets the page report its height (in CSS pixels, which are dp here) back to Compose. */
-private class HeightBridge {
+/**
+ * Between Compose and the page: holds the latest blocks until the page has loaded, sends at most
+ * one update every 50 ms, and receives the page's height (CSS pixels, which are dp here).
+ */
+private class MathBridge {
+    private val main = Handler(Looper.getMainLooper())
+    private val gson = Gson()
+    private var ready = false
+    private var scheduled = false
+    private var latest: List<String> = emptyList()
+    private var sent: List<String>? = null
+    private var view: WebView? = null
+
     @Volatile
     var onHeight: (Int) -> Unit = {}
 
+    fun pageLoading() {
+        Timber.d("MathAnswer: page load")
+        ready = false
+        sent = null
+    }
+
+    fun pageReady(webView: WebView) {
+        ready = true
+        view = webView
+        flush()
+    }
+
+    fun push(webView: WebView, blocks: List<String>) {
+        view = webView
+        latest = blocks
+        if (!ready || scheduled) return
+        scheduled = true
+        main.postDelayed({
+            scheduled = false
+            flush()
+        }, 50)
+    }
+
+    private fun flush() {
+        val webView = view ?: return
+        if (!ready || latest == sent) return
+        sent = latest
+        // JSON is a valid JavaScript expression, so the blocks arrive exactly as written.
+        webView.evaluateJavascript("setBlocks(${gson.toJson(latest)})", null)
+    }
+
     @JavascriptInterface
     fun height(cssPixels: Int) {
-        if (cssPixels > 0) android.os.Handler(android.os.Looper.getMainLooper()).post { onHeight(cssPixels) }
+        if (cssPixels > 0) main.post { onHeight(cssPixels) }
     }
 }
 
 private fun mathPage(
-    body: String,
     text: ComposeColor,
     link: ComposeColor,
     codeBackground: ComposeColor,
@@ -111,22 +167,39 @@ ul, ol { margin: 0 0 8px; padding-left: 22px; }
 math { font-size: 1.1em; }
 math[display="block"] { display: block; overflow-x: auto; margin: 6px 0; }
 </style></head><body>
-$body
+<div id="answer"></div>
 <script src="katex.min.js"></script>
 <script>
-for (const el of document.querySelectorAll(".math")) {
-  const display = el.tagName == "PRE";
-  const tex = el.textContent.replace(display ? /^\$\$|\$\$$/g : /^\$|\$$/g, "");
-  try {
-    const holder = document.createElement("span");
-    katex.render(tex, holder, { output: "mathml", displayMode: display, throwOnError: true });
-    el.replaceWith(holder);
-  } catch (e) {
-    // Unsupported TeX: keep the source.
+const shown = []; // [{html, el}] in order
+function typeset(root) {
+  for (const el of root.querySelectorAll(".math")) {
+    const display = el.tagName == "PRE";
+    const tex = el.textContent.replace(display ? /^\$\$|\$\$$/g : /^\$|\$$/g, "");
+    try {
+      const holder = document.createElement("span");
+      katex.render(tex, holder, { output: "mathml", displayMode: display, throwOnError: true, trust: false, maxSize: 20, maxExpand: 1000 });
+      el.replaceWith(holder);
+    } catch (e) {
+      // Unsupported TeX: keep the source.
+    }
   }
+}
+// Replaces only the blocks whose HTML changed; finished blocks keep their typeset math.
+function setBlocks(blocks) {
+  const answer = document.getElementById("answer");
+  blocks.forEach((html, i) => {
+    if (shown[i] && shown[i].html === html) return;
+    const el = document.createElement("div");
+    el.innerHTML = html;
+    typeset(el);
+    if (shown[i]) shown[i].el.replaceWith(el);
+    else answer.appendChild(el);
+    shown[i] = { html, el };
+  });
+  for (const extra of shown.splice(blocks.length)) extra.el.remove();
+  report();
 }
 const report = () => AiChat.height(Math.ceil(document.documentElement.getBoundingClientRect().height));
 new ResizeObserver(report).observe(document.body);
-report();
 </script></body></html>"""
 }

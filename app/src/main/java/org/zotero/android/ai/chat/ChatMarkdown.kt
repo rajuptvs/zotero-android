@@ -58,6 +58,79 @@ object ChatMarkdown {
         return html
     }
 
+    // region Streaming blocks
+    // Adapted from T3 Code's splitMarkdownBlocks (apps/web/src/components/chat/markdownStreamBlocks.ts),
+    // MIT License, Copyright (c) 2026 T3 Tools Inc. Same rule on desktop (Notes.splitBlocks);
+    // fixtures in ai/spec/blocks.json.
+
+    // Definitions, footnotes, raw HTML and container directives can tie blocks together.
+    private val documentWideSyntax = Regex("""^ {0,3}(?:\[[^\]\n]+\]:|<[A-Za-z!?/]|:::)|\[\^""", RegexOption.MULTILINE)
+    private val fencePattern = Regex("""^ {0,3}(`{3,}|~{3,})""")
+    // After a blank line these still continue the previous block: a list item or indented content.
+    private val continuationPattern = Regex("""^(?:[ \t]|(?:[-*+]|\d{1,9}[.)])(?:[ \t]|$))""")
+    // A number alone on the last line may be the start of the next list item ("2" before "2.").
+    private val pendingListNumber = Regex("""^ {0,3}\d{1,9}$""")
+    private val mathOpener = Regex("""\$\$|\\\[|\\\(""")
+
+    /**
+     * Cuts an answer at blank lines that close every open block, so each piece renders exactly as it
+     * would inside the whole text, and pieces before the last never change as more text streams in.
+     * Never cuts inside math (a [mathOrCode] match) or after a math opener that isn't closed yet.
+     * Returns null when the text uses syntax that spans blocks; render it whole then.
+     */
+    fun splitBlocks(text: String): List<String>? {
+        if (text.contains('\r') || documentWideSyntax.containsMatchIn(text)) return null
+        // Spans no cut may fall inside: math, and everything after an unclosed math opener.
+        val protectedSpans = mutableListOf<IntRange>()
+        var gapStart = 0
+        var unclosedFrom = -1
+        fun scanGap(from: Int, to: Int) {
+            if (unclosedFrom >= 0) return
+            mathOpener.find(text.substring(from, to))?.let { unclosedFrom = from + it.range.first }
+        }
+        mathOrCode.findAll(text).forEach { m ->
+            scanGap(gapStart, m.range.first)
+            if (m.groups[1] == null) protectedSpans += m.range.first until m.range.last + 1
+            gapStart = m.range.last + 1
+        }
+        scanGap(gapStart, text.length)
+        if (unclosedFrom >= 0) protectedSpans += unclosedFrom until text.length
+        fun canCut(at: Int) = protectedSpans.none { it.first < at && at < it.last + 1 }
+
+        val blocks = mutableListOf<String>()
+        var blockStart = 0
+        var lineStart = 0
+        var fence: String? = null
+        var fenceIndent = 0
+        var afterBlankLine = false
+        val lines = text.split("\n")
+        for ((i, line) in lines.withIndex()) {
+            val opener = fencePattern.find(line)?.groupValues?.get(1)
+            if (fence != null) {
+                // A line left of an indented fence may end the list item holding it, which isn't tracked.
+                if (line.take(fenceIndent).any { !it.isWhitespace() }) break
+                if (opener != null && opener[0] == fence[0] && opener.length >= fence.length && line.trim() == opener) fence = null
+            } else if (line.isBlank()) {
+                afterBlankLine = true
+            } else {
+                val continues = continuationPattern.containsMatchIn(line) ||
+                        (i == lines.lastIndex && pendingListNumber.containsMatchIn(line))
+                if (afterBlankLine && lineStart > blockStart && !continues && canCut(lineStart)) {
+                    blocks += text.substring(blockStart, lineStart)
+                    blockStart = lineStart
+                }
+                afterBlankLine = false
+                fence = opener
+                if (opener != null) fenceIndent = line.indexOf(opener)
+            }
+            lineStart += line.length + 1
+        }
+        blocks += text.substring(blockStart)
+        return blocks
+    }
+
+    // endregion
+
     /** Whether the answer has any math (outside code), so the panel typesets it. */
     fun containsMath(markdown: String): Boolean =
         mathOrCode.findAll(markdown).any { it.groups[1] == null }

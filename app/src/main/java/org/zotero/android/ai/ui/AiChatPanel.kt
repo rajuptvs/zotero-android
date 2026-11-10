@@ -66,6 +66,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.livedata.observeAsState
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -472,14 +473,24 @@ private fun ChatMessages(
         verticalArrangement = Arrangement.spacedBy(10.dp),
         contentPadding = PaddingValues(12.dp),
     ) {
-        itemsIndexed(viewState.turns) { index, turn ->
+        // The answer being written is shown as the next turn, under the key it keeps once saved, so
+        // its blocks (and math view) carry over instead of being rebuilt.
+        val streaming = viewState.streamingText?.takeIf { it.isNotEmpty() }
+        val entries = if (streaming != null) {
+            viewState.turns + ChatTurn("assistant", streaming, activity = viewState.liveActivity)
+        } else {
+            viewState.turns
+        }
+        itemsIndexed(entries, key = { index, _ -> "turn-$index" }) { index, turn ->
+            val isStreaming = streaming != null && index == entries.lastIndex
             if (turn.role == "user") {
                 UserMessage(turn)
             } else {
                 ToolActivity(turn.activity)
                 AssistantMessage(
                     text = turn.text,
-                    actions = {
+                    stateKey = "turn-$index",
+                    actions = if (isStreaming) null else ({
                         AnswerActions(
                             text = turn.text,
                             saved = index in viewState.savedAnswers,
@@ -491,16 +502,13 @@ private fun ChatMessages(
                                 null
                             },
                         )
-                    }
+                    }),
                 )
             }
         }
-        item {
+        item(key = "status") {
             Column {
-                if (viewState.isSending) ToolActivity(viewState.liveActivity)
-                viewState.streamingText?.takeIf { it.isNotEmpty() }?.let { text ->
-                    AssistantMessage(text = text, actions = null)
-                }
+                if (viewState.isSending && streaming == null) ToolActivity(viewState.liveActivity)
                 viewState.phase?.let { phase ->
                     StatusLine(phase)
                 }
@@ -577,18 +585,27 @@ private fun UserMessage(turn: ChatTurn) {
 }
 
 @Composable
-private fun AssistantMessage(text: String, actions: (@Composable () -> Unit)?) {
+private fun AssistantMessage(text: String, stateKey: String, actions: (@Composable () -> Unit)?) {
+    // Blocks (ChatMarkdown.splitBlocks): while streaming, finished blocks don't change, so only the
+    // last one renders again. Formulas are typeset as soon as they're complete.
+    val blocks = remember(text) { ChatMarkdown.splitBlocks(text) ?: listOf(text) }
     Column(modifier = Modifier.fillMaxWidth()) {
-        // Finished answers with math are typeset; while streaming, the formulas aren't complete yet.
-        if (actions != null && ChatMarkdown.containsMath(text)) {
-            MathAnswer(text)
+        if (ChatMarkdown.containsMath(text)) {
+            MathAnswer(blocks, stateKey)
         } else {
+            val typography = chatTypography()
             SelectionContainer {
-                Markdown(
-                    content = text,
-                    typography = chatTypography(),
-                    modifier = Modifier.fillMaxWidth(),
-                )
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    blocks.forEachIndexed { index, block ->
+                        key(index) {
+                            Markdown(
+                                content = block,
+                                typography = typography,
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                        }
+                    }
+                }
             }
         }
         actions?.invoke()

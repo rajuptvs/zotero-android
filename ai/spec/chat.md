@@ -119,7 +119,21 @@ aside before Markdown parsing; code spans and fenced code are left alone.
 
 Both clients provide: reader panel beside the document, library panel, selected-text chip,
 quick actions (Explain, Simplify, Translate, Define terms), attach page / area as image,
-Markdown answers with math typeset by KaTeX (from the note math markup above), status line (Reading the document… / Thinking… / Writing the answer… /
+Markdown answers with math typeset by KaTeX (from the note math markup above; KaTeX options `trust: false, maxSize: 20, maxExpand: 1000`, unparseable TeX shown as source), status line (Reading the document… / Thinking… / Writing the answer… /
 Running {tool}…), stop, model + reasoning picker, Copy / Save as note / Explain again, history menu,
 new chat, approval cards for writes (Approve / Decline, showing what will change), sign-in /
 sign-out / switch account / usage link.
+
+## Streaming blocks
+
+While an answer streams, clients split it with `splitBlocks` (desktop `Notes.splitBlocks`, Android
+`ChatMarkdown.splitBlocks`; adapted from T3 Code's MIT-licensed `markdownStreamBlocks.ts`) and
+render each block separately, so finished blocks (and their typeset math) never re-render:
+- cut only at a blank line that closes every open block (code fences tracked; a following list item
+  or indented line continues the block; a number alone on the last line is a pending list item);
+- never cut inside a math span (`MATH_OR_CODE`) or after a math opener (`$$`, `\[`, `\(`) that
+  isn't closed yet;
+- return null (render the whole text) for reference definitions, footnotes, raw HTML and `:::`.
+The blocks join back into the text, and blocks before the last never change as text is appended.
+`ai/spec/blocks.json` holds the expected splits; desktop (`node --test desktop-plugin/test/*.test.mjs`)
+and Android (`ChatMarkdownBlocksTest`) both check them at every streamed prefix.

@@ -1,0 +1,149 @@
+{
+ "notes": "Streaming block splits (chat.md, \"Streaming blocks\"). Every client splits these exactly so.",
+ "cases": [
+  {
+   "name": "paragraphs",
+   "text": "# Title\n\nFirst paragraph with `code` and **bold**.\n\nSecond [link](https://example.com).",
+   "blocks": [
+    "# Title\n\n",
+    "First paragraph with `code` and **bold**.\n\n",
+    "Second [link](https://example.com)."
+   ]
+  },
+  {
+   "name": "loose list",
+   "text": "- one\n- two\n\n- loose three\n\n  continued\n\nAfter the list.",
+   "blocks": [
+    "- one\n- two\n\n- loose three\n\n  continued\n\n",
+    "After the list."
+   ]
+  },
+  {
+   "name": "ordered lists",
+   "text": "1. first\n\n2. second\n\nText\n\n3) restarted",
+   "blocks": [
+    "1. first\n\n2. second\n\n",
+    "Text\n\n3) restarted"
+   ]
+  },
+  {
+   "name": "fences",
+   "text": "```ts\nconst a = 1;\n\n\nconst b = 2;\n```\n\nafter\n\n~~~\nx\n\n~~~~\n\ny\n~~~\n\nend",
+   "blocks": [
+    "```ts\nconst a = 1;\n\n\nconst b = 2;\n```\n\n",
+    "after\n\n",
+    "~~~\nx\n\n~~~~\n\n",
+    "y\n~~~\n\nend"
+   ]
+  },
+  {
+   "name": "table",
+   "text": "| a | b |\n| - | - |\n| 1 | 2 |\n\nAfter the table.",
+   "blocks": [
+    "| a | b |\n| - | - |\n| 1 | 2 |\n\n",
+    "After the table."
+   ]
+  },
+  {
+   "name": "display math own lines",
+   "text": "Before.\n\n$$\n\\mathrm{softmax}(x)\n$$\n\nAfter.",
+   "blocks": [
+    "Before.\n\n",
+    "$$\n\\mathrm{softmax}(x)\n$$\n\n",
+    "After."
+   ]
+  },
+  {
+   "name": "single-line display math",
+   "text": "Score:\n\n$$\\frac{QK^\\top}{\\sqrt{d_k}}$$\n\nThen softmax.",
+   "blocks": [
+    "Score:\n\n",
+    "$$\\frac{QK^\\top}{\\sqrt{d_k}}$$\n\n",
+    "Then softmax."
+   ]
+  },
+  {
+   "name": "mid-line $$",
+   "text": "We get $$a+b$$ here.\n\nNext paragraph.",
+   "blocks": [
+    "We get $$a+b$$ here.\n\n",
+    "Next paragraph."
+   ]
+  },
+  {
+   "name": "blank line inside $$",
+   "text": "Start\n\n$$\na\n\nb\n$$\n\nEnd",
+   "blocks": [
+    "Start\n\n",
+    "$$\na\n\nb\n$$\n\n",
+    "End"
+   ]
+  },
+  {
+   "name": "\\( across a blank line",
+   "text": "Inline \\(a\n\nb\\) spans.\n\nAfter.",
+   "blocks": [
+    "Inline \\(a\n\nb\\) spans.\n\n",
+    "After."
+   ]
+  },
+  {
+   "name": "\\[ display",
+   "text": "Text\n\n\\[ E = mc^2 \\]\n\nMore",
+   "blocks": [
+    "Text\n\n",
+    "\\[ E = mc^2 \\]\n\n",
+    "More"
+   ]
+  },
+  {
+   "name": "$$ inside a code fence",
+   "text": "```\n$$ not math\n\nstill code\n```\n\nafter",
+   "blocks": [
+    "```\n$$ not math\n\nstill code\n```\n\n",
+    "after"
+   ]
+  },
+  {
+   "name": "unclosed $$ at the tail",
+   "text": "Para one.\n\n$$\n\\frac{1}{2}\n\nstill math",
+   "blocks": [
+    "Para one.\n\n",
+    "$$\n\\frac{1}{2}\n\nstill math"
+   ]
+  },
+  {
+   "name": "unclosed \\( at the tail",
+   "text": "Para one.\n\nNow \\(x\n\ny",
+   "blocks": [
+    "Para one.\n\n",
+    "Now \\(x\n\ny"
+   ]
+  },
+  {
+   "name": "inline money",
+   "text": "Costs $5 and $10.\n\nNext.",
+   "blocks": [
+    "Costs $5 and $10.\n\n",
+    "Next."
+   ]
+  },
+  {
+   "name": "pending list number",
+   "text": "1. first\n\n2",
+   "blocks": [
+    "1. first\n\n2"
+   ]
+  },
+  {
+   "name": "footnote stays whole",
+   "text": "a[^x]\n\n[^x]: note",
+   "blocks": null
+  },
+  {
+   "name": "html stays whole",
+   "text": "<details>\n\nbody\n\n</details>",
+   "blocks": null
+  }
+ ]
+}

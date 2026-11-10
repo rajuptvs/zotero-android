@@ -64,6 +64,7 @@ ZoteroAI.Panel = class {
 	}
 
 	destroy() {
+		clearTimeout(this._streamTimer);
 		this._unsubscribe?.();
 		this.element.remove();
 	}
@@ -73,6 +74,7 @@ ZoteroAI.Panel = class {
 		this._unsubscribe?.();
 		this.session = session;
 		this._rendered = {};
+		this._streamBlocks = [];
 		this._menu.hidden = true;
 		this._input.value = session?.state.input || "";
 		this._unsubscribe = session?.onChange((state) => this.render(state));
@@ -307,15 +309,45 @@ ZoteroAI.Panel = class {
 		return this._h("ul", { class: "zai-activity" }, lines.map((l) => this._h("li", { text: l })));
 	}
 
+	/**
+	 * The answer being written, split into blocks (Notes.splitBlocks): finished blocks keep their
+	 * nodes (and typeset math) and only the last one is rendered again, at most every 50 ms.
+	 */
 	_renderStreaming(state) {
-		this._streaming.replaceChildren();
 		let text = state.streamingText;
+		if (!text || !text.trim()) {
+			// Finished or not started: no delay, so the bubble never lingers next to the saved turn.
+			clearTimeout(this._streamTimer);
+			this._streamTimer = null;
+			this._paintStreaming(state);
+			return;
+		}
+		if (this._streamTimer) return;
+		let wait = Math.max(0, 50 - (Date.now() - (this._streamPaintedAt || 0)));
+		this._streamTimer = setTimeout(() => {
+			this._streamTimer = null;
+			this._streamPaintedAt = Date.now();
+			if (this.session) this._paintStreaming(this.session.state);
+		}, wait);
+	}
+
+	_paintStreaming(state) {
+		let text = state.streamingText || "";
 		let activity = state.isSending ? state.liveActivity : [];
-		this._streaming.hidden = !(text && text.trim()) && !activity.length;
-		if (this._streaming.hidden) return;
-		let body = this._h("div", { class: "zai-markdown" });
-		this._setMarkdown(body, text || "");
-		this._streaming.append(this._activity(activity) || "", body);
+		this._streaming.hidden = !text.trim() && !activity.length;
+		if (this._streaming.hidden) {
+			this._streamBlocks = [];
+			this._streaming.replaceChildren();
+			return;
+		}
+		let old = this._streamBlocks || [];
+		this._streamBlocks = (ZoteroAI.Notes.splitBlocks(text) || [text]).map((src, i) => {
+			if (old[i]?.src === src) return old[i];
+			let node = this._h("div", { class: "zai-markdown" });
+			this._setMarkdown(node, src);
+			return { src, node };
+		});
+		this._streaming.replaceChildren(...[this._activity(activity)].filter(Boolean), ...this._streamBlocks.map((b) => b.node));
 	}
 
 	_renderApproval(state) {
@@ -436,7 +468,7 @@ ZoteroAI.Panel = class {
 			let display = node.localName == "pre";
 			let tex = node.textContent.replace(display ? /^\$\$|\$\$$/g : /^\$|\$$/g, "");
 			try {
-				let mathml = katex.renderToString(tex, { output: "mathml", displayMode: display, throwOnError: true });
+				let mathml = katex.renderToString(tex, { output: "mathml", displayMode: display, throwOnError: true, trust: false, maxSize: 20, maxExpand: 1000 });
 				let parsed = new DOMParser().parseFromString(`<body>${mathml}</body>`, "text/html").body.firstElementChild;
 				parsed.classList.add(display ? "zai-math-block" : "zai-math");
 				node.replaceWith(doc.importNode(parsed, true));

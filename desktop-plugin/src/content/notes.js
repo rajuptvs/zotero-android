@@ -35,6 +35,83 @@ ZoteroAI.Notes = {
 		return this._marked;
 	},
 
+	// region Streaming blocks
+	// Adapted from T3 Code's splitMarkdownBlocks (apps/web/src/components/chat/markdownStreamBlocks.ts),
+	// MIT License, Copyright (c) 2026 T3 Tools Inc. Same rule on Android (ChatMarkdown.splitBlocks);
+	// fixtures in ai/spec/blocks.json.
+
+	// Definitions, footnotes, raw HTML and container directives can tie blocks together.
+	DOCUMENT_WIDE_SYNTAX: /^ {0,3}(?:\[[^\]\n]+\]:|<[A-Za-z!?/]|:::)|\[\^/m,
+	FENCE_PATTERN: /^ {0,3}(`{3,}|~{3,})/,
+	// After a blank line these still continue the previous block: a list item or indented content.
+	CONTINUATION_PATTERN: /^(?:[ \t]|(?:[-*+]|\d{1,9}[.)])(?:[ \t]|$))/,
+	// A number alone on the last line may be the start of the next list item ("2" before "2.").
+	PENDING_LIST_NUMBER: /^ {0,3}\d{1,9}$/,
+	MATH_OPENER: /\$\$|\\\[|\\\(/,
+
+	/**
+	 * Cuts an answer at blank lines that close every open block, so each piece renders exactly as it
+	 * would inside the whole text, and pieces before the last never change as more text streams in.
+	 * Never cuts inside math (a MATH_OR_CODE match) or after a math opener that isn't closed yet.
+	 * Returns null when the text uses syntax that spans blocks; render it whole then.
+	 */
+	splitBlocks(text) {
+		if (text.includes("\r") || this.DOCUMENT_WIDE_SYNTAX.test(text)) return null;
+		// Spans no cut may fall inside: math, and everything after an unclosed math opener.
+		let protectedSpans = [];
+		let gapStart = 0;
+		let unclosedFrom = -1;
+		let scanGap = (from, to) => {
+			if (unclosedFrom >= 0) return;
+			let m = this.MATH_OPENER.exec(text.slice(from, to));
+			if (m) unclosedFrom = from + m.index;
+		};
+		for (let m of text.matchAll(new RegExp(this.MATH_OR_CODE.source, "g"))) {
+			scanGap(gapStart, m.index);
+			if (m[1] == null) protectedSpans.push([m.index, m.index + m[0].length]);
+			gapStart = m.index + m[0].length;
+		}
+		scanGap(gapStart, text.length);
+		if (unclosedFrom >= 0) protectedSpans.push([unclosedFrom, text.length]);
+		let canCut = (at) => !protectedSpans.some(([a, b]) => a < at && at < b);
+
+		let blocks = [];
+		let blockStart = 0;
+		let lineStart = 0;
+		let fence = null;
+		let fenceIndent = 0;
+		let afterBlankLine = false;
+		let lines = text.split("\n");
+		for (let i = 0; i < lines.length; i++) {
+			let line = lines[i];
+			let opener = this.FENCE_PATTERN.exec(line)?.[1];
+			if (fence !== null) {
+				// A line left of an indented fence may end the list item holding it, which isn't tracked.
+				if (/\S/.test(line.slice(0, fenceIndent))) break;
+				if (opener && opener[0] === fence[0] && opener.length >= fence.length && line.trim() === opener) fence = null;
+			}
+			else if (line.trim() === "") {
+				afterBlankLine = true;
+			}
+			else {
+				let continues = this.CONTINUATION_PATTERN.test(line)
+					|| (i == lines.length - 1 && this.PENDING_LIST_NUMBER.test(line));
+				if (afterBlankLine && lineStart > blockStart && !continues && canCut(lineStart)) {
+					blocks.push(text.slice(blockStart, lineStart));
+					blockStart = lineStart;
+				}
+				afterBlankLine = false;
+				fence = opener ?? null;
+				if (opener) fenceIndent = line.indexOf(opener);
+			}
+			lineStart += line.length + 1;
+		}
+		blocks.push(text.slice(blockStart));
+		return blocks;
+	},
+
+	// endregion
+
 	// Code (left alone) | $$…$$ | \[…\] | \(…\) | $…$ (not "$5 and $10").
 	MATH_OR_CODE: /(```[\s\S]*?```|`[^`\n]*`)|\$\$([\s\S]+?)\$\$|\\\[([\s\S]+?)\\\]|\\\(([\s\S]+?)\\\)|\$(?!\s)([^$\n]+?)(?<!\s)\$(?!\d)/g,
 
