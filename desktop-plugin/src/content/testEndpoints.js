@@ -14,13 +14,16 @@
  *   POST /zotero-ai/test/describe    {"name", "args"}  → the approval card text for a write
  *   POST /zotero-ai/test/notes       {"html"}          → how a conversation note is read back
  *   POST /zotero-ai/test/markdown    {"markdown"}      → answer → note HTML
+ *   POST /zotero-ai/test/semantic    {"action", ...}   → semantic search: status, enable, tokenize, embed,
+ *                                                        rank, useIndex, build (ai/conformance)
  */
 
 ZoteroAI.TestEndpoints = {
 	PATHS: ["/zotero-ai/test/tool", "/zotero-ai/test/sync", "/zotero-ai/test/status",
 		"/zotero-ai/test/eval", "/zotero-ai/test/screenshot", "/zotero-ai/test/signin",
 		"/zotero-ai/test/describe", "/zotero-ai/test/notes", "/zotero-ai/test/markdown", "/zotero-ai/test/policy",
-		"/zotero-ai/test/mcp-client", "/zotero-ai/test/approvals", "/zotero-ai/test/mcp-remote"],
+		"/zotero-ai/test/mcp-client", "/zotero-ai/test/approvals", "/zotero-ai/test/mcp-remote",
+		"/zotero-ai/test/pdf-render", "/zotero-ai/test/semantic"],
 
 	register() {
 		let token = Services.env.get("ZOTERO_AI_TEST_TOKEN");
@@ -105,6 +108,39 @@ ZoteroAI.TestEndpoints = {
 				}
 			}
 			return { error: "unknown action" };
+		});
+		// Semantic search (ai/spec/semantic.md): golden checks and index builds for the conformance suite.
+		E["/zotero-ai/test/semantic"] = endpoint(["POST"], async (data) => {
+			let S = ZoteroAI.Semantic;
+			try {
+				switch (data.action) {
+					case "status":
+						return await S.status();
+					case "enable":
+						await S.setEnabled(!!data.on);
+						return await S.status();
+					case "tokenize":
+						return { ids: (await S.call("tokenize", { text: String(data.text ?? "") }, { urgent: true })).ids };
+					case "embed":
+						return { embedding: Array.from((await S.call("embed", { text: String(data.text ?? "") }, { urgent: true })).embedding) };
+					case "rank": {
+						let index = await S._readIndex(data.indexPath, null);
+						let embedding = (await S.call("embed", { text: String(data.text ?? "") }, { urgent: true })).embedding;
+						return { rows: S.rank(index, embedding, data.top || 20).map(({ row, score }) => ({ row, itemKey: index.itemKeys[row], score })) };
+					}
+					case "useIndex":
+						S.useIndex(data.path ?? null);
+						return await S.status();
+					case "build": {
+						let manifest = await ZoteroAI.SemanticBuilder.buildTo(data.out, data.itemKeys ?? null);
+						return { path: data.out, manifest };
+					}
+				}
+				return { error: "invalid_argument", message: `Unknown action ${data.action}` };
+			}
+			catch (e) {
+				return { error: e.code || "failed", message: String(e?.message || e) };
+			}
 		});
 		// The approval rule for every tool, with auto-approve off and on (compared with Android).
 		E["/zotero-ai/test/policy"] = endpoint(["POST"], async () => Object.fromEntries(ZoteroAI.Spec.tools.map((t) => [t.name, {

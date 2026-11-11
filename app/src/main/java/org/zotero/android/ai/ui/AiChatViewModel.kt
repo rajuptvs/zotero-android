@@ -108,6 +108,7 @@ internal class AiChatViewModel @Inject constructor(
     private val toolSpec: ZoteroToolSpec,
     private val tools: ZoteroTools,
     private val mcpRemote: org.zotero.android.ai.mcp.McpRemote,
+    private val semanticSearch: org.zotero.android.ai.semantic.SemanticSearch,
     private val dbWrapperMain: DbWrapperMain,
     private val schemaController: SchemaController,
     private val dispatchers: Dispatchers,
@@ -345,6 +346,19 @@ internal class AiChatViewModel @Inject constructor(
         val count = mcpRemote.toolsForTurn().index.values.count { it.server.id == server.id }
         if (!server.enabled) "${server.name} is turned off." else if (count > 0) "${server.name}: $count tools" else "${server.name} isn't available."
     }.getOrElse { "${server.name}: ${it.message}" }
+
+    // endregion
+
+    // region Semantic search (ai/spec/semantic.md)
+
+    val semanticSearchSupported: Boolean get() = semanticSearch.model.supported
+
+    val semanticSearchState get() = semanticSearch.model.state
+
+    fun setSemanticSearch(on: Boolean) {
+        semanticSearch.model.setEnabled(on)
+        if (!on) semanticSearch.release()
+    }
 
     // endregion
 
@@ -886,6 +900,7 @@ internal class AiChatViewModel @Inject constructor(
 
     private fun toolLabel(name: String): String = when (name) {
         "zotero_search_items" -> "Searching your library"
+        "zotero_semantic_search" -> "Searching by meaning"
         "zotero_get_item_metadata" -> "Reading item details"
         "zotero_get_item_fulltext" -> "Reading a paper"
         "zotero_get_collections" -> "Looking at your collections"
@@ -894,6 +909,7 @@ internal class AiChatViewModel @Inject constructor(
         "zotero_get_recent" -> "Checking recent additions"
         "zotero_get_notes" -> "Reading notes"
         "zotero_get_annotations" -> "Reading annotations"
+        "zotero_export_items" -> "Exporting citations"
         "zotero_get_pdf_info" -> "Opening a PDF"
         "zotero_get_page_image" -> "Looking at a page"
         "zotero_batch_update_tags" -> "Updating tags"

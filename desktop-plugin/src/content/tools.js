@@ -110,6 +110,15 @@ ZoteroAI.Tools = {
 		return Math.min(Math.max(Math.trunc(v), 1), max);
 	},
 
+	_intOrNull(args, name) {
+		let v = args[name];
+		return typeof v == "number" && Number.isFinite(v) ? Math.trunc(v) : null;
+	},
+
+	_offset(args) {
+		return Math.max(this._intOrNull(args, "offset") ?? 0, 0);
+	},
+
 	_item(key) {
 		let item = Zotero.Items.getByLibraryAndKey(this.libraryID, key);
 		if (!item) throw new ZoteroAIToolError("not_found", `No item with key ${key}.`);
@@ -194,6 +203,45 @@ ZoteroAI.Tools = {
 		return out;
 	},
 
+	/** The extra texts `mode: everything` looks in (tools.md, zotero_search_items). */
+	_searchableEverything(item) {
+		let out = Zotero.ItemFields.getItemTypeFields(item.itemTypeID)
+			.map((id) => this._field(item, Zotero.ItemFields.getName(id)).toLowerCase());
+		for (let note of Zotero.Items.get(item.getNotes(false))) {
+			if (!note.deleted) out.push(ZoteroAI.plainText(note.getNote()).toLowerCase());
+		}
+		for (let attachment of Zotero.Items.get(item.getAttachments(false))) {
+			if (attachment.deleted) continue;
+			out.push(this._title(attachment).toLowerCase());
+			for (let a of attachment.isFileAttachment() ? attachment.getAnnotations() : []) {
+				out.push((a.annotationText || "").toLowerCase(), (a.annotationComment || "").toLowerCase());
+			}
+		}
+		return out;
+	},
+
+	/** Keys of regular items whose attachments Zotero's full-text search finds `word` in. */
+	async _fulltextMatches(word) {
+		let search = new Zotero.Search();
+		search.libraryID = this.libraryID;
+		search.addCondition("fulltextContent", "contains", word);
+		let found = new Set();
+		// The index also matches the start of longer words; zotero.org matches whole words only, so
+		// check the text itself (tools.md). Without a cache file there is no text to check: no match.
+		let escaped = word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+		let whole = new RegExp(`(?<![\\p{L}\\p{N}_])${escaped}(?![\\p{L}\\p{N}_])`, "iu");
+		// Only attachments: fields, notes and annotations are matched as on every other client.
+		for (let attachment of Zotero.Items.get(await search.search())) {
+			if (!attachment.isAttachment() || attachment.deleted || !attachment.parentID) continue;
+			let item = Zotero.Items.get(attachment.parentID);
+			if (!item || !this._isRegular(item) || found.has(item.key)) continue;
+			let file = Zotero.Fulltext.getItemCacheFile(attachment);
+			let text = file && await IOUtils.exists(file.path) ? await IOUtils.readUTF8(file.path).catch(() => null) : null;
+			if (text != null && whole.test(text)) found.add(item.key);
+		}
+		return found;
+	},
+
 	_textAttachment(item) {
 		let types = ["application/pdf", "application/epub+zip", "text/html"];
 		let candidates = item.isAttachment() ? [item]
@@ -204,6 +252,27 @@ ZoteroAI.Tools = {
 				|| this._titleOrder(a, b))[0] || null;
 	},
 
+	/** The attachment's indexed text, or null; a PDF not indexed yet is extracted as Zotero's indexer would. */
+	async _attachmentText(attachment, priority = true) {
+		let file = Zotero.Fulltext.getItemCacheFile(attachment);
+		let text = null;
+		try {
+			if (file && await IOUtils.exists(file.path)) text = await IOUtils.readUTF8(file.path);
+		}
+		catch (e) {
+			Zotero.logError(e);
+		}
+		if (text == null && attachment.isPDFAttachment() && await attachment.fileExists()) {
+			try {
+				text = (await Zotero.PDFWorker.getFullText(attachment.id, null, priority))?.text ?? null;
+			}
+			catch (e) {
+				Zotero.logError(e);
+			}
+		}
+		return text;
+	},
+
 	// endregion
 
 	_tools: {
@@ -211,10 +280,21 @@ ZoteroAI.Tools = {
 			let words = (typeof args.query == "string" ? args.query : "").toLowerCase().split(/\s+/).filter(Boolean);
 			let tag = this._strOrNull(args, "tag");
 			let collectionKey = this._strOrNull(args, "collection_key");
-			let limit = this._limit(args, "limit", 20, 100);
+			let itemType = this._strOrNull(args, "item_type");
+			let yearFrom = this._intOrNull(args, "year_from"), yearTo = this._intOrNull(args, "year_to");
+			let limit = this._limit(args, "limit", 20, 100), offset = this._offset(args);
+			if (![undefined, null, "metadata", "everything"].includes(args.mode)) {
+				throw new ZoteroAIToolError("invalid_argument", "mode must be metadata or everything.");
+			}
+			let everything = args.mode == "everything";
+			let fulltext = new Map();
+			if (everything) {
+				for (let w of words) fulltext.set(w, await this._fulltextMatches(w));
+			}
 			let items = (await this._regularItems()).filter((item) => {
 				let texts = this._searchable(item);
-				return words.every((w) => texts.some((t) => t.includes(w)));
+				if (everything) texts.push(...this._searchableEverything(item));
+				return words.every((w) => texts.some((t) => t.includes(w)) || fulltext.get(w)?.has(item.key));
 			});
 			if (tag != null) items = items.filter((i) => this._tagNames(i).includes(tag));
 			if (collectionKey != null) {
@@ -223,8 +303,19 @@ ZoteroAI.Tools = {
 					return c && !c.deleted && c.key == collectionKey;
 				}));
 			}
+			if (itemType != null) items = items.filter((i) => i.itemType == itemType);
+			if (yearFrom != null || yearTo != null) {
+				items = items.filter((i) => {
+					let year = this._year(i);
+					return !!year && (yearFrom == null || +year >= yearFrom) && (yearTo == null || +year <= yearTo);
+				});
+			}
 			items.sort((a, b) => this._titleOrder(a, b));
-			return { total: items.length, items: items.slice(0, limit).map((i) => this._summary(i)) };
+			return { total: items.length, items: items.slice(offset, offset + limit).map((i) => this._summary(i)) };
+		},
+
+		async zotero_semantic_search(args) {
+			return ZoteroAI.Semantic.search(args);
 		},
 
 		async zotero_get_item_metadata(args) {
@@ -249,6 +340,7 @@ ZoteroAI.Tools = {
 				doi: this._field(item, "DOI"),
 				url: this._field(item, "url"),
 				abstract: this._field(item, "abstractNote"),
+				citationKey: this._field(item, "citationKey"),
 				tags: this._sortedTags(item),
 				collections: item.getCollections().map((id) => Zotero.Collections.get(id))
 					.filter((c) => c && !c.deleted)
@@ -263,32 +355,48 @@ ZoteroAI.Tools = {
 
 		async zotero_get_item_fulltext(args) {
 			let maxChars = this._limit(args, "max_chars", 20000, 100000);
+			let start = Math.max(this._intOrNull(args, "start") ?? 0, 0);
 			let attachment = this._textAttachment(this._item(this._str(args, "item_key")));
 			if (!attachment) throw new ZoteroAIToolError("not_found", "This item has no PDF, EPUB or snapshot.");
-			let file = Zotero.Fulltext.getItemCacheFile(attachment);
-			let text = null;
-			try {
-				if (file && await IOUtils.exists(file.path)) text = await IOUtils.readUTF8(file.path);
-			}
-			catch (e) {
-				Zotero.logError(e);
-			}
-			// Not indexed yet (e.g. just synced): extract it, as Zotero's indexer would.
-			if (text == null && attachment.isPDFAttachment() && await attachment.fileExists()) {
-				try {
-					text = (await Zotero.PDFWorker.getFullText(attachment.id, null, true))?.text ?? null;
-				}
-				catch (e) {
-					Zotero.logError(e);
-				}
-			}
+			let text = await this._attachmentText(attachment);
 			if (text == null) throw new ZoteroAIToolError("unavailable", "This attachment's text hasn't been indexed yet.");
 			return {
 				attachmentKey: attachment.key,
 				totalChars: text.length,
-				truncated: text.length > maxChars,
-				text: text.slice(0, maxChars),
+				truncated: start + text.slice(start, start + maxChars).length < text.length,
+				text: text.slice(start, start + maxChars),
 			};
+		},
+
+		async zotero_export_items(args) {
+			let keys = [...new Set(this._strList(args, "item_keys"))];
+			if (keys.length < 1 || keys.length > 50) throw new ZoteroAIToolError("invalid_argument", "Give 1 to 50 item keys.");
+			if (!["csl_json", "bibtex"].includes(args.format)) throw new ZoteroAIToolError("invalid_argument", "format must be csl_json or bibtex.");
+			for (let key of keys) {
+				let item = Zotero.Items.getByLibraryAndKey(this.libraryID, key);
+				if (!item || !this._isRegular(item)) throw new ZoteroAIToolError("not_found", `No item with key ${key}.`);
+			}
+			// From zotero.org, like every other client, so the text is the same everywhere.
+			let apiKey = await Zotero.Sync.Data.Local.getAPIKey();
+			let userID = Zotero.Users.getCurrentUserID();
+			if (!apiKey || !userID) throw new ZoteroAIToolError("unavailable", "Exporting needs Zotero sync to be set up.");
+			let url = `https://api.zotero.org/users/${userID}/items?` + new URLSearchParams({ itemKey: keys.join(","), include: "bibtex,csljson", limit: "50" });
+			let response;
+			try {
+				response = await fetch(url, { headers: { "Zotero-API-Key": apiKey, "Zotero-API-Version": "3" } });
+			}
+			catch (e) {
+				throw new ZoteroAIToolError("unavailable", "Exporting needs zotero.org, which can't be reached.");
+			}
+			if (!response.ok) throw new ZoteroAIToolError("failed", `Zotero Web API: HTTP ${response.status}`);
+			let found = new Map((await response.json()).map((i) => [i.key, i]));
+			for (let key of keys) {
+				if (!found.has(key)) throw new ZoteroAIToolError("not_found", `${key} hasn't synced to zotero.org yet.`);
+			}
+			let text = args.format == "bibtex"
+				? keys.map((k) => (found.get(k).bibtex || "").trim()).join("\n\n")
+				: JSON.stringify(keys.map((k) => ({ ...found.get(k).csljson, id: k })));
+			return { format: args.format, keys, text };
 		},
 
 		async zotero_get_pdf_info(args) {
@@ -338,25 +446,25 @@ ZoteroAI.Tools = {
 
 		async zotero_get_collection_items(args) {
 			let collection = this._collection(this._str(args, "collection_key"));
-			let limit = this._limit(args, "limit", 50, 100);
+			let limit = this._limit(args, "limit", 50, 100), offset = this._offset(args);
 			let items = collection.getChildItems(false, false).filter((i) => this._isRegular(i));
 			items.sort((a, b) => this._titleOrder(a, b));
 			return {
 				collection: { key: collection.key, name: collection.name },
 				total: items.length,
-				items: items.slice(0, limit).map((i) => this._summary(i)),
+				items: items.slice(offset, offset + limit).map((i) => this._summary(i)),
 			};
 		},
 
 		async zotero_get_tags(args) {
-			let limit = this._limit(args, "limit", 200, 500);
+			let limit = this._limit(args, "limit", 200, 500), offset = this._offset(args);
 			let counts = new Map();
 			for (let item of await this._regularItems()) {
 				for (let t of this._tagNames(item)) counts.set(t, (counts.get(t) || 0) + 1);
 			}
 			let sorted = [...counts.entries()].sort((a, b) => (b[1] - a[1])
 				|| ZoteroAI.compareText(a[0], b[0]) || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
-			return { total: sorted.length, tags: sorted.slice(0, limit).map(([tag, count]) => ({ tag, count })) };
+			return { total: sorted.length, tags: sorted.slice(offset, offset + limit).map(([tag, count]) => ({ tag, count })) };
 		},
 
 		async zotero_get_recent(args) {
@@ -372,7 +480,7 @@ ZoteroAI.Tools = {
 		async zotero_get_notes(args) {
 			let parentKey = this._strOrNull(args, "item_key");
 			let query = this._strOrNull(args, "query")?.toLowerCase() || null;
-			let limit = this._limit(args, "limit", 20, 50);
+			let limit = this._limit(args, "limit", 20, 50), offset = this._offset(args);
 			if (parentKey != null) this._item(parentKey);
 			let all = await Zotero.Items.getAll(this.libraryID, false, false);
 			let notes = all.filter((i) => i.isNote() && !i.deleted)
@@ -383,7 +491,7 @@ ZoteroAI.Tools = {
 				|| (a.note.key < b.note.key ? -1 : 1));
 			return {
 				total: notes.length,
-				notes: notes.slice(0, limit).map(({ note, text }) => ({
+				notes: notes.slice(offset, offset + limit).map(({ note, text }) => ({
 					key: note.key,
 					parentKey: note.parentKey || null,
 					title: this._title(note),

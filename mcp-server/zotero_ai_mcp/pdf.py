@@ -28,11 +28,20 @@ JPEG_QUALITY = 85
 
 _render_lock = threading.Lock()  # PDFium isn't thread-safe
 
+# What Files.path fetches: how the file starts, its extension, what it's called in messages, its
+# largest size. A zip is the semantic search index (ai/spec/semantic.md caps it at 512 MiB).
+KINDS = {"pdf": (b"%PDF-", ".pdf", "PDF", MAX_FILE_BYTES), "zip": (b"PK\x03\x04", ".zip", "ZIP file", 512 * 1024 * 1024)}
+
 
 class PdfError(Exception):
     def __init__(self, code, message):
         super().__init__(message)
         self.code = code
+
+
+class TooLarge(PdfError):
+    def __init__(self, message="The file is too large."):
+        super().__init__("unavailable", message)
 
 
 def _pdfium():
@@ -151,7 +160,8 @@ def _bitmap_image(bitmap):
 # region Files
 
 class Files:
-    """Gets attachment files from WebDAV or Zotero storage into a disk cache."""
+    """Gets attachment files (PDFs, and the semantic search index's ZIP) from WebDAV or Zotero storage
+    into a disk cache."""
 
     def __init__(self, library, cache_dir, webdav=None):
         self.library = library
@@ -173,12 +183,13 @@ class Files:
         with self.locks_lock:
             return self.locks.setdefault(key, threading.Lock())
 
-    def path(self, attachment):
+    def path(self, attachment, kind="pdf"):
         """→ (path of the cached file, filename); downloads it first if needed. Raises PdfError."""
+        _, ext, label, cap = KINDS[kind]
         if attachment.get("linkMode") == "linked_file":
-            raise PdfError("unavailable", "This PDF is a linked file, which only the computer that has it can open.")
+            raise PdfError("unavailable", f"This {label} is a linked file, which only the computer that has it can open.")
         key = attachment["key"]
-        filename = attachment.get("filename") or "file.pdf"
+        filename = attachment.get("filename") or "file" + ext
         with self._lock(key):
             try:
                 if self.webdav:
@@ -192,12 +203,12 @@ class Files:
                     with tempfile.TemporaryDirectory(dir=self._tmp_dir()) as tmp:
                         download = os.path.join(tmp, "download")
                         if self.webdav:
-                            self._fetch(self._webdav_request(f"{key}.zip"), download)
-                            self._unzip(download, filename, os.path.join(tmp, "file"))
+                            self._fetch(self._webdav_request(f"{key}.zip"), download, cap + cap // 100)  # a zip of it can be a little larger
+                            self._unzip(download, filename, os.path.join(tmp, "file"), kind)
                             download = os.path.join(tmp, "file")
                         else:
-                            self._fetch(self._storage_request(key), download)
-                        self._check_pdf(download)
+                            self._fetch(self._storage_request(key), download, cap)
+                        self._check(download, kind)
                         self._store(key, download, path)
                 os.utime(path)  # recently used: kept by _prune
                 return path, filename
@@ -216,10 +227,12 @@ class Files:
         return self.cache_dir
 
     @staticmethod
-    def _check_pdf(path):
+    def _check(path, kind):
+        signature, _, label, _ = KINDS[kind]
         with open(path, "rb") as f:
-            if b"%PDF-" not in f.read(1024):
-                raise PdfError("unavailable", "This file isn't a PDF.")
+            head = f.read(1024)
+        if not (signature in head if kind == "pdf" else head.startswith(signature)):
+            raise PdfError("unavailable", f"This file isn't a {label}.")
 
     # WebDAV: ITEMKEY.prop holds the file's hash, ITEMKEY.zip the file.
 
@@ -238,18 +251,19 @@ class Files:
         return m.group(1)
 
     @staticmethod
-    def _unzip(zip_path, filename, out_path):
+    def _unzip(zip_path, filename, out_path, kind="pdf"):
+        _, ext, label, cap = KINDS[kind]
         with zipfile.ZipFile(zip_path) as archive:
             entries = [e for e in archive.infolist() if not e.is_dir()]
             entry = (next((e for e in entries if e.filename == filename), None)
-                     or next((e for e in entries if e.filename.lower().endswith(".pdf")), None)
+                     or next((e for e in entries if e.filename.lower().endswith(ext)), None)
                      or (entries[0] if len(entries) == 1 else None))
             if not entry:
-                raise PdfError("unavailable", "The file's zip on the WebDAV server has no PDF in it.")
-            if entry.file_size > MAX_FILE_BYTES:
-                raise PdfError("unavailable", "The PDF is too large.")
+                raise PdfError("unavailable", f"The file's zip on the WebDAV server has no {label} in it.")
+            if entry.file_size > cap:
+                raise TooLarge(f"The {label} is too large.")
             with archive.open(entry) as src, open(out_path, "wb") as dst:
-                Files._copy_capped(src, dst)
+                Files._copy_capped(src, dst, cap)
 
     # Zotero storage: the Web API redirects to the file; the API key never follows the redirect.
 
@@ -260,17 +274,17 @@ class Files:
         return req
 
     @staticmethod
-    def _fetch(req, out_path):
+    def _fetch(req, out_path, cap):
         with urllib.request.urlopen(req, timeout=120) as resp, open(out_path, "wb") as out:
-            Files._copy_capped(resp, out)
+            Files._copy_capped(resp, out, cap)
 
     @staticmethod
-    def _copy_capped(src, dst):
+    def _copy_capped(src, dst, cap):
         total = 0
         while chunk := src.read(1024 * 1024):
             total += len(chunk)
-            if total > MAX_FILE_BYTES:
-                raise PdfError("unavailable", "The file is too large.")
+            if total > cap:
+                raise TooLarge()
             dst.write(chunk)
 
     def _store(self, key, src, path):

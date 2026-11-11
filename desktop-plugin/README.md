@@ -25,6 +25,24 @@ Sign-in redirects back to Zotero's local server (`http://127.0.0.1:23119/auth/ca
 `claude mcp add` / `codex mcp add` command to paste. Changes an agent asks for wait for your
 approval in Zotero. Details: [`../ai/spec/mcp.md`](../ai/spec/mcp.md).
 
+## Semantic search
+
+**Tools → Zotero AI: Semantic search…** turns on `zotero_semantic_search` (finding papers by
+meaning) on this computer. It downloads the pinned EmbeddingGemma 2 model (346 MB, sha256-checked)
+into `<Zotero data dir>/zotero-ai/models/`, then builds an index of My Library in the background:
+metadata, full text and notes, one chunk at a time, slower while you use the computer and paused during
+syncs. The first build takes a while (about 1 s per 512-token chunk with 4 threads); after that only
+changed items are embedded again. Progress is kept in `<Zotero data dir>/zotero-ai/semantic.sqlite`,
+so a build carries on after a restart. The index is saved as a standalone attachment, "Zotero AI
+search index", when the first build finishes and then at most once a day, and syncs to your other
+devices like any file, so it counts against your Zotero storage quota (tens of MB for a typical
+library). An index holds at most 200,000 passages; items past that are left out, and the dialog says
+so. If another computer already builds the library's index, this one only reads it. Details: [`../ai/spec/semantic.md`](../ai/spec/semantic.md).
+
+The model runs in a ChromeWorker with onnxruntime-web (WASM, SIMD, up to 4 threads; a ChromeWorker is
+cross-origin isolated, so threads work there, unlike in a content frame). The vendored runtime and
+tokenizer add 15 MB to the unpacked plugin and 3.9 MB to the .xpi.
+
 ## What's where
 
 | File | |
@@ -35,6 +53,11 @@ approval in Zotero. Details: [`../ai/spec/mcp.md`](../ai/spec/mcp.md).
 | `src/content/chat.js` | A conversation: context block, tool loop with approvals, notes, history |
 | `src/content/tools.js` | The tools of `ai/spec/tools.json`, on Zotero's APIs |
 | `src/content/pdf.js` | PDF pages as images, drawn with the pdf.js of Zotero's reader |
+| `src/content/semantic.js` | Semantic search: model download, the worker, the index attachment, `zotero_semantic_search` |
+| `src/content/semanticWorker.mjs` | The ChromeWorker: tokenizer, model, chunking, index ZIP read/write |
+| `src/content/semanticBuilder.js` | Builds the index in the background and keeps the index attachment |
+| `src/content/semanticDialog.js` | The Semantic search dialog |
+| `src/content/vendor/` | marked, KaTeX, highlight.js, onnxruntime-web 1.31.1 (WASM build), @huggingface/tokenizers 0.2.0 |
 | `src/content/notes.js` | Note formats and Markdown → note HTML |
 | `src/content/panel.js` | The panel UI |
 | `src/content/windows.js` | Puts the panel in the window, follows tabs, reader selection popup |
@@ -57,5 +80,12 @@ launch in `~/.zotero-ai-test/test-token` that every dev request must send as
 Cross-device checks against an Android emulator running the debug app:
 
 ```bash
-python3 ../ai/conformance/run.py --serial emulator-5554 --desktop http://127.0.0.1:23119
+python3 ../ai/conformance/run.py                       # fast tier, about 1.5 min: every check, with test timings
+python3 ../ai/conformance/run.py --only semantic,read  # just the sections you're working on
+python3 ../ai/conformance/run.py --full                # before pushing, about 3 min: adds cross-device writes
+                                                       # after sync, the real 20 s approval hold and a fresh
+                                                       # semantic index of real items
 ```
+Add `--standalone http://127.0.0.1:8770` (with `ZOTERO_AI_MCP_ADMIN_PASSWORD`) to check the
+standalone server too. Each section's time is printed at the end; `CONFORMANCE_TIMES=1` stamps every
+check.

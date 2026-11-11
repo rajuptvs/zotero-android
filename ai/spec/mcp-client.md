@@ -20,7 +20,8 @@ function tools, and run the calls. Android and desktop follow these rules exactl
 - Per server and chat turn: `initialize` (`protocolVersion: "2025-06-18"`, `clientInfo:
   {name: "zotero-ai"}`), `notifications/initialized`, then `tools/list` (first page only).
 - Redirects are not followed (an error), so the https / loopback-only rule holds for every hop.
-  Replies over 5 MB are an error.
+  Replies over 5 MiB (counted in bytes as they arrive, with or without a `Content-Length`) are
+  an error.
 - Timeouts: 10 s to connect, 60 s per call. A server that fails is skipped for that turn; the panel
   shows "<server> isn't available" in the activity lines.
 

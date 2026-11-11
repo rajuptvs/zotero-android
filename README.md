@@ -52,8 +52,11 @@ Everything else is the stock Zotero app. Work happens on the [`ai-chat-panel`](h
 ## Ask AI about your library
 
 The ✨ button on the library screen opens the same panel for the whole library. The model gets
-the current collection and your selected items, and can use 17 Zotero tools: search, item details,
-full text, collections, tags, recent items, notes, annotations, and **pages of any PDF as images**;
+the current collection and your selected items, and can use 19 Zotero tools: search (titles and
+authors, or everything including the full text of your PDFs, with type and year filters), **search
+by meaning** (see below), item
+details, full text, collections, tags, recent items, notes, annotations, **citation export
+(BibTeX or CSL-JSON)** and **pages of any PDF as images**;
 and, **only after you approve each change**, add or remove tags, file items into collections,
 create collections and notes, add an item by DOI/ISBN/arXiv ID, or move items to the trash.
 
@@ -62,6 +65,13 @@ create collections and notes, add an item by DOI/ISBN/arXiv ID, or move items to
   loses ("What does Figure 3 of the BERT paper show?"). If the PDF isn't on the device yet, it's
   downloaded the way Zotero normally does, from Zotero storage or your WebDAV server. Images are
   sent with that answer only, not stored in the conversation note.
+- **Search by meaning.** Ask for "papers about making attention cheaper" and the model finds them
+  even when they never use those words, with the passages that matched. Turn it on in
+  **Tools → Zotero AI: Semantic search…** on the desktop: it downloads an open embedding model
+  (EmbeddingGemma 2, 346 MB, runs on your computer) and indexes your library in the background. The
+  index syncs to your other devices like any Zotero file; on the phone, turn semantic search on in
+  the AI panel's menu (the same model, downloaded on Wi-Fi) to search it there. Nothing leaves your
+  devices and your own file storage.
 
 - Each change shows an **Allow this change?** card with exactly what will happen (*Add tag to-read on “BERT: …”*). Decline, and the model is told so and nothing changes. "Approve changes automatically" in the menu skips the card, except for moving items to the trash, which always asks.
 - The panel shows which tools ran under each answer (*Searching your library*, *✓ Add tag …*).
@@ -104,7 +114,7 @@ You don't need the chat panel or a ChatGPT account for this.
    export ZOTERO_AI_MCP_TOKEN=zai_…
    codex mcp add zotero --url http://127.0.0.1:23119/zotero-ai/mcp --bearer-token-env-var ZOTERO_AI_MCP_TOKEN
    ```
-3. Ask the agent about your library. It gets the same 17 tools as the chat panels, with the same
+3. Ask the agent about your library. It gets the same 19 tools as the chat panels, with the same
    results (page images arrive as MCP image content), plus `zotero_get_pdf_file`, which hands the
    agent the PDF itself (up to 25 MB).
 
@@ -116,15 +126,19 @@ anything. You can let a trusted agent apply changes without asking (off by defau
 to the trash always asks. Each agent has its own token, which you can revoke at any time.
 
 The server lives on Zotero's own local port (`127.0.0.1` only) and refuses requests from web pages.
-Clients that only speak stdio can use `npx mcp-remote <url> --header "Authorization: Bearer …"`.
+Clients that only speak stdio can use the bridge in [`mcp-bridge/`](mcp-bridge) (Node, no
+dependencies), which also builds a one-click Claude Desktop extension (`.mcpb`).
 The protocol and guarantees are in [`ai/spec/mcp.md`](ai/spec/mcp.md).
 
 **With Zotero closed:** [`mcp-server/`](mcp-server) is a small standalone server (Python, no
 dependencies) that serves the same tools from the Zotero Web API, on this computer or a home server.
 Changes wait for your approval on its password-protected `/admin` page, which also works from a
 phone browser if you reach the server over HTTPS. For PDFs it reads files from Zotero storage or
-your WebDAV server, and draws pages with `pypdfium2` and `Pillow` if they're installed. The same
-conformance checks run against it.
+your WebDAV server, and draws pages with `pypdfium2` and `Pillow` if they're installed. It can
+search by meaning too (`--semantic`, with `onnxruntime`, `tokenizers` and `numpy`). It ships with
+a Dockerfile, and can offer OAuth (`--oauth --public-url …`) so web connectors such as claude.ai's
+or ChatGPT's can connect without a pasted token; you approve each connection on the `/admin` page.
+The same conformance checks run against it.
 
 ### Your MCP servers in the chat panels
 
@@ -162,7 +176,7 @@ All 193 checks pass, alongside the Node and JUnit tests for the block splitter. 
 |---|---|---|
 | Platforms | Zotero desktop | Android **and** Zotero desktop, same behavior |
 | Model access | Your local agent CLI's login or API key | Sign in with ChatGPT in the app; no CLI, Node.js or Python needed |
-| Library tools | `zotero-cli` (via the agent's shell) | 15 built-in tools, run inside the Zotero client, identical on both platforms |
+| Library tools | `zotero-cli` (via the agent's shell) | 19 built-in tools, run inside the Zotero client, identical on both platforms |
 | Writes | Agent permission cards; Zotero 10 needs `zotero-mcp authorize-local` | An approval card for every change, described in plain words |
 | Use from outside agents | Through zotero-mcp | Built-in MCP server in the desktop plugin, with the same tools and approvals in Zotero |
 | Conversations | Local history in the Zotero profile, resumable in the terminal | Zotero notes that sync, so a chat moves between phone and computer |

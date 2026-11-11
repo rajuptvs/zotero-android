@@ -17,7 +17,7 @@ import urllib.request
 import uuid
 import xml.etree.ElementTree as ET
 
-from . import markdown_lite, pdf
+from . import markdown_lite, pdf, semantic
 
 API = "https://api.zotero.org"
 NON_REGULAR = {"attachment", "note", "annotation"}
@@ -49,6 +49,25 @@ def year(date):
 def u16len(s):
     """Length in UTF-16 code units, as JavaScript and Kotlin count it."""
     return len(s.encode("utf-16-le", "surrogatepass")) // 2
+
+
+def export_result(keys, fmt, found):
+    """zotero_export_items' result from zotero.org's items (key → item with bibtex and csljson)."""
+    for key in keys:
+        if key not in found:
+            raise ToolError("not_found", f"{key} hasn't synced to zotero.org yet.")
+    if fmt == "bibtex":
+        text = "\n\n".join(found[k].get("bibtex", "").strip() for k in keys)
+    else:
+        text = json.dumps([{**found[k].get("csljson", {}), "id": k} for k in keys], ensure_ascii=False, separators=(",", ":"))
+    return {"format": fmt, "keys": keys, "text": text}
+
+
+def u16slice(s, start, end):
+    """UTF-16 code units start…end (may split a surrogate pair, as String.slice does)."""
+    if start == 0 and u16len(s) <= end:
+        return s
+    return s.encode("utf-16-le", "surrogatepass")[2 * start:2 * end].decode("utf-16-le", "surrogatepass")
 
 
 def u16cut(s, n):
@@ -91,6 +110,7 @@ class Library:
         self.last_sync = 0.0
         self.lock = threading.RLock()
         self.files = None  # pdf.Files, set by the server
+        self.semantic = None  # semantic.Semantic, set by the server
         schema = self._get("/schema", base=API)
         self.fields = {}  # itemType → {baseField: field}
         self.type_fields = {}  # itemType → set of field names
@@ -267,6 +287,16 @@ class Library:
         return min(max(int(v), 1), maximum)
 
     @staticmethod
+    def _int_or_none(args, name):
+        v = args.get(name)
+        return None if isinstance(v, bool) or not isinstance(v, (int, float)) else int(v)
+
+    @staticmethod
+    def _offset(args):
+        v = args.get("offset")
+        return 0 if isinstance(v, bool) or not isinstance(v, (int, float)) else max(int(v), 0)
+
+    @staticmethod
     def _unique(values):
         out = []
         for v in values:
@@ -287,12 +317,15 @@ class Library:
                 raise ToolError("invalid_argument", f"Unknown tool {name}")
             with self.lock:
                 self.sync()
-                if name not in PDF_TOOLS:
+                if name in PDF_TOOLS:
+                    attachment = dict(self.pdf_attachment(self._str(args, "item_key")))
+                elif name == "zotero_semantic_search":
+                    attachment = self.index_attachment()
+                else:
                     return fn(args)
-                attachment = dict(self.pdf_attachment(self._str(args, "item_key")))
-            # Downloading and rendering can take a while: not under the library lock.
+            # Downloading, rendering and embedding can take a while: not under the library lock.
             return fn(args, attachment)
-        except (ToolError, pdf.PdfError) as e:
+        except (ToolError, pdf.PdfError, semantic.SemanticError) as e:
             return {"error": e.code, "message": str(e)}
         except urllib.error.HTTPError as e:
             return {"error": "failed", "message": f"Zotero Web API: HTTP {e.code}"}
@@ -303,18 +336,71 @@ class Library:
         words = [w for w in (args.get("query") if isinstance(args.get("query"), str) else "").lower().split() if w]
         tag = self._str_or_none(args, "tag")
         collection_key = self._str_or_none(args, "collection_key")
-        limit = self._limit(args, "limit", 20, 100)
+        item_type = self._str_or_none(args, "item_type")
+        year_from, year_to = self._int_or_none(args, "year_from"), self._int_or_none(args, "year_to")
+        limit, offset = self._limit(args, "limit", 20, 100), self._offset(args)
+        mode = args.get("mode")
+        if mode not in (None, "metadata", "everything"):
+            raise ToolError("invalid_argument", "mode must be metadata or everything.")
+        everything = mode == "everything"
+        fulltext = {w: self.fulltext_matches(w) for w in words} if everything else {}
+        children = self.children_by_parent() if everything else {}
         items = []
         for item in self.regular_items():
-            texts = self.searchable(item)
-            if all(any(w in t for t in texts) for w in words):
+            texts = self.searchable(item) + (self.searchable_everything(item, children) if everything else [])
+            if all(any(w in t for t in texts) or item["key"] in fulltext.get(w, ()) for w in words):
                 items.append(item)
         if tag is not None:
             items = [i for i in items if tag in self.tag_names(i)]
         if collection_key is not None:
             items = [i for i in items if self.in_collection(i, collection_key)]
+        if item_type is not None:
+            items = [i for i in items if i.get("itemType") == item_type]
+        if year_from is not None or year_to is not None:
+            def in_range(i):
+                y = year(self.field(i, "date"))
+                return bool(y) and (year_from is None or int(y) >= year_from) and (year_to is None or int(y) <= year_to)
+            items = [i for i in items if in_range(i)]
         items.sort(key=self.title_order)
-        return {"total": len(items), "items": [self.summary(i) for i in items[:limit]]}
+        return {"total": len(items), "items": [self.summary(i) for i in items[offset:offset + limit]]}
+
+    def children_by_parent(self):
+        """parent key → its non-trashed child items (notes, attachments, annotations)."""
+        out = {}
+        for i in self.items.values():
+            if i.get("parentItem") and not i.get("deleted"):
+                out.setdefault(i["parentItem"], []).append(i)
+        return out
+
+    def searchable_everything(self, item, children):
+        """The extra texts `mode: everything` looks in (tools.md, zotero_search_items)."""
+        out = [str(item.get(f) or "").lower() for f in self.type_fields.get(item.get("itemType"), ())]
+        for child in children.get(item["key"], []):
+            if child.get("itemType") == "note":
+                out.append(plain_text(child.get("note", "")).lower())
+            elif child.get("itemType") == "attachment":
+                out.append(self.title(child).lower())
+                for a in children.get(child["key"], []):
+                    if a.get("itemType") == "annotation":
+                        out += [str(a.get("annotationText") or "").lower(), str(a.get("annotationComment") or "").lower()]
+        return out
+
+    def fulltext_matches(self, word):
+        """Keys of regular items whose attachments zotero.org's full-text search finds `word` in."""
+        try:
+            resp, data = self._request("GET", f"{self.base}/items?" + urllib.parse.urlencode({"q": word, "qmode": "everything", "format": "keys"}), raw=True)
+        except (urllib.error.URLError, OSError):
+            raise ToolError("unavailable", "Searching full text needs zotero.org, which can't be reached.")
+        found = set()
+        # Only attachments: fields, notes and annotations are matched locally, the same way on every client.
+        for key in data.decode("utf-8").split():
+            attachment = self.items.get(key)
+            if not attachment or attachment.get("itemType") != "attachment" or attachment.get("deleted"):
+                continue
+            item = self.items.get(attachment.get("parentItem") or "")
+            if item and self.is_regular(item):
+                found.add(item["key"])
+        return found
 
     def t_get_item_metadata(self, args):
         item = self.get_item(self._str(args, "item_key"))
@@ -335,6 +421,7 @@ class Library:
             "creators": [{"type": c.get("creatorType"), "name": creator_name(c)} for c in item.get("creators", [])],
             "date": self.field(item, "date"), "year": year(self.field(item, "date")), "publication": publication,
             "doi": self.field(item, "DOI"), "url": self.field(item, "url"), "abstract": self.field(item, "abstractNote"),
+            "citationKey": self.field(item, "citationKey"),
             "tags": self.sorted_tags(item),
             "collections": [{"key": c["key"], "name": c["name"]} for c in collections],
             "attachments": [{"key": a["key"], "title": self.title(a), "contentType": a.get("contentType") or ""} for a in sorted(attachments, key=self.title_order)],
@@ -349,6 +436,7 @@ class Library:
 
     def t_get_item_fulltext(self, args):
         max_chars = self._limit(args, "max_chars", 20000, 100000)
+        start = max(self._int_or_none(args, "start") or 0, 0)
         attachment = self.text_attachment(self.get_item(self._str(args, "item_key")))
         if not attachment:
             raise ToolError("not_found", "This item has no PDF, EPUB or snapshot.")
@@ -359,7 +447,8 @@ class Library:
                 raise ToolError("unavailable", "This attachment's text hasn't been indexed yet.")
             raise
         total = u16len(text)
-        return {"attachmentKey": attachment["key"], "totalChars": total, "truncated": total > max_chars, "text": u16cut(text, max_chars)}
+        part = u16slice(text, start, start + max_chars)
+        return {"attachmentKey": attachment["key"], "totalChars": total, "truncated": start + u16len(part) < total, "text": part}
 
     def pdf_attachment(self, key):
         item = self.get_item(key)
@@ -396,6 +485,59 @@ class Library:
                 "_content": [{"type": "resource", "resource": {"uri": f"zotero://attachment/{attachment['key']}", "mimeType": "application/pdf",
                                                                "blob": blob}}]}
 
+    def index_attachment(self):
+        """The semantic search index: the most recently modified standalone stored-file attachment
+        tagged _zotero-ai-index that isn't in the trash (a copy), or None."""
+        found = [i for i in self.items.values() if i.get("itemType") == "attachment" and i.get("linkMode") == "imported_file"
+                 and not i.get("parentItem") and not i.get("deleted") and semantic.INDEX_TAG in self.tag_names(i)]
+        found.sort(key=lambda i: utf16(i["key"]))
+        # The most recently modified; ties: the lowest key (semantic.md).
+        return dict(max(found, key=lambda i: i.get("dateModified", ""))) if found else None
+
+    def t_semantic_search(self, args, attachment):
+        query = semantic.normalize(args.get("query") if isinstance(args.get("query"), str) else "")
+        if not query:
+            raise ToolError("invalid_argument", "query is empty.")
+        limit = self._limit(args, "limit", 10, 20)
+        if not self.semantic:
+            raise ToolError("unavailable", semantic.NO_INDEX if attachment is None else semantic.OFF)
+        index, ranked = self.semantic.search(query, attachment, self.files)
+        items = {}
+        with self.lock:
+            for row, score in ranked:
+                chunk = index.chunk(row)
+                item = self.items.get(chunk["itemKey"])
+                if not item or not self.is_regular(item):  # deleted or trashed since the build
+                    continue
+                entry = items.get(item["key"])
+                if entry is None:
+                    if len(items) == limit:  # full: later rows can only add passages to listed items
+                        continue
+                    entry = items[item["key"]] = {**self.summary(item), "score": semantic.round3(score), "passages": []}
+                if len(entry["passages"]) < semantic.PASSAGES_PER_ITEM:
+                    entry["passages"].append({"source": chunk.get("source"), "key": chunk.get("key"),
+                                              "text": u16cut(chunk["text"], semantic.PASSAGE_CHARS)})
+        return {"index": index.info(), "items": list(items.values())}
+
+    def t_export_items(self, args):
+        keys = self._unique(self._str_list(args, "item_keys"))
+        fmt = args.get("format")
+        if not 1 <= len(keys) <= 50:
+            raise ToolError("invalid_argument", "Give 1 to 50 item keys.")
+        if fmt not in ("csl_json", "bibtex"):
+            raise ToolError("invalid_argument", "format must be csl_json or bibtex.")
+        for key in keys:
+            item = self.items.get(key)
+            if not item or not self.is_regular(item):
+                raise ToolError("not_found", f"No item with key {key}.")
+        try:
+            found = self._get(f"{self.base}/items?" + urllib.parse.urlencode({"itemKey": ",".join(keys), "include": "bibtex,csljson", "limit": 50}))
+        except (urllib.error.URLError, OSError) as e:
+            if isinstance(e, urllib.error.HTTPError):
+                raise
+            raise ToolError("unavailable", "Exporting needs zotero.org, which can't be reached.")
+        return export_result(keys, fmt, {i["key"]: i for i in found})
+
     def t_get_collections(self, args):
         collections = [c for c in self.collections.values() if not c.get("deleted")]
         collections.sort(key=lambda c: (compare_key(c["name"]), utf16(c["key"])))
@@ -409,7 +551,8 @@ class Library:
         c = self.get_collection(self._str(args, "collection_key"))
         limit = self._limit(args, "limit", 50, 100)
         items = sorted((i for i in self.regular_items() if c["key"] in i.get("collections", [])), key=self.title_order)
-        return {"collection": {"key": c["key"], "name": c["name"]}, "total": len(items), "items": [self.summary(i) for i in items[:limit]]}
+        offset = self._offset(args)
+        return {"collection": {"key": c["key"], "name": c["name"]}, "total": len(items), "items": [self.summary(i) for i in items[offset:offset + limit]]}
 
     def t_get_tags(self, args):
         limit = self._limit(args, "limit", 200, 500)
@@ -418,7 +561,8 @@ class Library:
             for t in self.tag_names(item):
                 counts[t] = counts.get(t, 0) + 1
         ordered = sorted(counts.items(), key=lambda kv: (-kv[1], compare_key(kv[0]), utf16(kv[0])))
-        return {"total": len(ordered), "tags": [{"tag": t, "count": n} for t, n in ordered[:limit]]}
+        offset = self._offset(args)
+        return {"total": len(ordered), "tags": [{"tag": t, "count": n} for t, n in ordered[offset:offset + limit]]}
 
     def t_get_recent(self, args):
         limit = self._limit(args, "limit", 10, 100)
@@ -431,7 +575,7 @@ class Library:
         parent_key = self._str_or_none(args, "item_key")
         query = self._str_or_none(args, "query")
         query = query.lower() if query else None
-        limit = self._limit(args, "limit", 20, 50)
+        limit, offset = self._limit(args, "limit", 20, 50), self._offset(args)
         if parent_key is not None:
             self.get_item(parent_key)
         notes = []
@@ -444,7 +588,7 @@ class Library:
         notes.sort(key=lambda nt: utf16(nt[0]["key"]))
         notes.sort(key=lambda nt: nt[0].get("dateModified", ""), reverse=True)
         return {"total": len(notes), "notes": [{"key": n["key"], "parentKey": n.get("parentItem") or None,
-                                                 "title": self.title(n), "text": u16cut(text, 2000)} for n, text in notes[:limit]]}
+                                                 "title": self.title(n), "text": u16cut(text, 2000)} for n, text in notes[offset:offset + limit]]}
 
     def t_get_annotations(self, args):
         item = self.get_item(self._str(args, "item_key"))

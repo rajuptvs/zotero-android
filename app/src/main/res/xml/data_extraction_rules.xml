@@ -2,8 +2,10 @@
 <data-extraction-rules>
     <cloud-backup>
         <exclude domain="sharedpref" path="ChatGptAuth.xml" />
+        <exclude domain="sharedpref" path="ai_semantic.xml" />
     </cloud-backup>
     <device-transfer>
         <exclude domain="sharedpref" path="ChatGptAuth.xml" />
+        <exclude domain="sharedpref" path="ai_semantic.xml" />
     </device-transfer>
 </data-extraction-rules>

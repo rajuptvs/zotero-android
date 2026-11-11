@@ -14,6 +14,9 @@ behaviour and result shapes below, so the same request gives the same answer on 
 - Errors: return `{"error": "<code>", "message": "<human text>"}` with codes
   `not_found`, `invalid_argument`, `unavailable`, `declined` (user rejected a write), `failed`.
 - Limits: clamp to the documented range; `null` means the default.
+- Paging: `offset` skips that many entries of the complete, sorted result before `limit` applies
+  (`null` or below 0 = 0). `total` always counts every match, so `offset + limit < total` means
+  there is more.
 - Sorting must be deterministic as specified. "Title order" = case-insensitive (Unicode lowercase)
   comparison of the title, then of the key.
 
@@ -38,31 +41,79 @@ behaviour and result shapes below, so the same request gives the same answer on 
 ## Tools
 
 ### zotero_search_items
-Split `query` on whitespace (lowercase). An item matches when **every** word is a substring of at
-least one of: title, any creator's firstName/lastName/name, `year`, any tag name. Then apply `tag`
-(exact, case-sensitive) and `collection_key` (direct membership) filters. Default limit 20.
-Result: `{"total": <matches before limit>, "items": [ItemSummary, ...]}` in title order.
+Split `query` on whitespace (lowercase). An item matches when **every** word matches it. With
+`mode` `"metadata"` (or `null`) a word matches when it's a substring of at least one of: title, any
+creator's firstName/lastName/name, `year`, any tag name. With `"everything"` a word also matches
+when it's a substring of
+- any field of the item (every field its item type has, e.g. `abstractNote`, `publicationTitle`,
+  `DOI`, `extra`, `citationKey`),
+- the text of a child note (the `zotero_get_notes` conversion, before cutting) or the title of a
+  child attachment (both not in the trash),
+- the text or comment of an annotation on one of those attachments,
+
+or when the client's Zotero full-text search finds the word in one of its attachments: the desktop
+asks its own full-text index (`Zotero.FullText.findItemsWithContent`, the index behind Zotero's
+"All Fields & Tags" search), Android and the standalone server ask zotero.org
+(`items?q=<word>&qmode=everything&format=keys`; of the keys found only attachments count, each for
+its parent regular item, since fields, notes and annotations are matched as above). Full text is
+matched by whole words, case-insensitively: "encoder" doesn't find "encoders" (zotero.org works this
+way; the desktop's index also matches the start of longer words, so it checks each match against
+the attachment's cached text, with a word being a run of letters, digits and `_`). In rare cases
+zotero.org splits words differently from that rule. zotero.org can't be reached → `unavailable`.
+Any other `mode` → `invalid_argument` ("mode must be metadata or everything.").
+
+Then apply the filters: `tag` (exact, case-sensitive), `collection_key` (direct membership),
+`item_type` (exact item type), `year_from` / `year_to` (inclusive, on `year`; items without a year
+are left out when either is set). Default limit 20, max 100.
+Result: `{"total": <matches>, "items": [ItemSummary, ...]}` in title order, paged by `offset`.
+
+### zotero_semantic_search
+Search by meaning over the library's semantic index; the model, index format, ranking and result
+are specified in `semantic.md`.
 
 ### zotero_get_item_metadata
 ```json
 {"key": "...", "itemType": "...", "title": "...",
  "creators": [{"type": "author", "name": "Ashish Vaswani"}],
  "date": "...", "year": "...", "publication": "...", "doi": "...", "url": "...", "abstract": "...",
+ "citationKey": "...",
  "tags": ["..."], "collections": [{"key": "...", "name": "..."}],
  "attachments": [{"key": "...", "title": "...", "contentType": "application/pdf"}],
  "notes": [{"key": "...", "title": "..."}]}
 ```
 - `creators`: in order; `name` = "firstName lastName" (or single `name`).
 - `publication`: `publicationTitle`, else `proceedingsTitle`, else `bookTitle`, else `websiteTitle`, else `""`.
+- `citationKey`: the item's Citation Key field (Zotero 7+), `""` if empty.
 - Missing text fields are `""`. `collections` sorted by name; `attachments`/`notes` in title order.
 
 ### zotero_get_item_fulltext
 Resolve `item_key` to an attachment: the key itself if it's a PDF/EPUB/HTML attachment, else the
 item's first such attachment (PDF first, then EPUB, then HTML; then title order). Text comes from
 Zotero's full-text index, the same content the Zotero Web API serves at `items/<key>/fulltext`.
-Default `max_chars` 20000, max 100000.
+Default `max_chars` 20000, max 100000. `start` (default 0, below 0 = 0) is where `text` begins, so a
+long text is read in parts: `text` is the characters from `start` up to `start + max_chars` (UTF-16
+code units, like `totalChars`; a cut may split a surrogate pair, as `String.slice` does), and
+`truncated` is true when more follows (`start + length of text < totalChars`). A `start` at or past
+the end gives `""`.
 Result: `{"attachmentKey": "...", "totalChars": 12345, "truncated": true, "text": "..."}`.
 Error `unavailable` if the attachment has not been indexed.
+
+### zotero_export_items
+`{"format": "bibtex", "keys": ["K1", "K2"], "text": "..."}`, with `keys` = `item_keys` de-duplicated,
+in the order given. Every client takes the export from zotero.org, so the text is identical
+everywhere: `GET items?itemKey=K1,K2,…&include=bibtex,csljson` with the library's API key (the
+desktop uses its sync key). It's what has synced: unsynced changes aren't in it.
+- 1–50 keys, else `invalid_argument` ("Give 1 to 50 item keys."); `format` other than `csl_json` or
+  `bibtex` → `invalid_argument` ("format must be csl_json or bibtex.").
+- Every key must be a regular item in the library (on this client), else `not_found` ("No item with
+  key X.") and nothing is exported; a key zotero.org doesn't have yet (not synced) → `not_found`
+  ("X hasn't synced to zotero.org yet."). No API key, or zotero.org can't be reached →
+  `unavailable`.
+- `bibtex`: each item's `bibtex`, trimmed, joined with `"\n\n"`. The entry key is the item's Citation
+  Key field if set, else Zotero's generated key.
+- `csl_json`: a JSON array of each item's `csljson` with `"id"` set to the item key (members
+  otherwise as zotero.org sends them), written compactly (no spaces, non-ASCII as is, `<`, `>` and `&`
+  not escaped).
 
 ### zotero_get_collections
 `{"collections": [{"key": "...", "name": "...", "parentKey": null, "itemCount": 3}]}` sorted by
@@ -70,11 +121,11 @@ name (case-insensitive) then key. `itemCount` = regular items directly in the co
 
 ### zotero_get_collection_items
 `{"collection": {"key": "...", "name": "..."}, "total": n, "items": [ItemSummary]}` in title order.
-Default limit 50.
+Default limit 50, paged by `offset`.
 
 ### zotero_get_tags
 `{"total": n, "tags": [{"tag": "...", "count": 4}]}` sorted by count desc, then tag
-case-insensitively. Counts regular items only. Default limit 200.
+case-insensitively. Counts regular items only. Default limit 200, paged by `offset`.
 
 ### zotero_get_recent
 `{"items": [ItemSummary + "dateAdded": "2026-11-10T18:00:31Z"]}` by `dateAdded` desc, then key.
@@ -83,7 +134,8 @@ Default limit 10.
 ### zotero_get_notes
 `{"total": n, "notes": [{"key": "...", "parentKey": "..." | null, "title": "...", "text": "..."}]}`
 - `text`: note HTML converted to plain text, whitespace collapsed, first 2000 chars.
-- Trashed notes excluded. Sorted by `dateModified` desc, then key. Default limit 20.
+- Trashed notes excluded. Sorted by `dateModified` desc, then key. Default limit 20, paged by
+  `offset`.
 
 ### zotero_get_annotations
 `{"annotations": [{"key": "...", "attachmentKey": "...", "type": "highlight", "text": "...",

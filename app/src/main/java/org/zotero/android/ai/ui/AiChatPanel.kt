@@ -247,7 +247,9 @@ private fun PanelHeader(
     var showHistory by remember { mutableStateOf(false) }
     var showMenu by remember { mutableStateOf(false) }
     var showMcpServers by remember { mutableStateOf(false) }
+    var showSemanticSearch by remember { mutableStateOf(false) }
     if (showMcpServers) McpServersDialog(viewModel) { showMcpServers = false }
+    if (showSemanticSearch) SemanticSearchDialog(viewModel) { showSemanticSearch = false }
     val signedIn = viewState.auth as? ChatGptAuthState.SignedIn
     Row(
         modifier = Modifier
@@ -339,6 +341,15 @@ private fun PanelHeader(
                             showMcpServers = true
                         }
                     )
+                    if (viewModel.semanticSearchSupported) {
+                        DropdownMenuItem(
+                            text = { Text("Semantic search…") },
+                            onClick = {
+                                showMenu = false
+                                showSemanticSearch = true
+                            }
+                        )
+                    }
                     DropdownMenuItem(
                         text = { Text(stringResource(Strings.reader_chat_usage)) },
                         onClick = {

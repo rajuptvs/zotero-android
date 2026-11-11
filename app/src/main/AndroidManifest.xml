@@ -14,6 +14,9 @@
         android:name="android.permission.WRITE_EXTERNAL_STORAGE"
         tools:node="remove" />
 
+    <!-- ONNX Runtime (AI semantic search) needs API 24; the feature is off below that. -->
+    <uses-sdk tools:overrideLibrary="ai.onnxruntime" />
+
     <application
         android:name=".ZoteroApplication"
         android:icon="@mipmap/ic_launcher"

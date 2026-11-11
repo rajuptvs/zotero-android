@@ -20,6 +20,7 @@ ZoteroAI.LIBRARY_SUGGESTIONS = [
 
 ZoteroAI.TOOL_LABELS = {
 	zotero_search_items: "Searching your library",
+	zotero_semantic_search: "Searching by meaning",
 	zotero_get_item_metadata: "Reading item details",
 	zotero_get_item_fulltext: "Reading a paper",
 	zotero_get_collections: "Looking at your collections",
@@ -28,6 +29,7 @@ ZoteroAI.TOOL_LABELS = {
 	zotero_get_recent: "Checking recent additions",
 	zotero_get_notes: "Reading notes",
 	zotero_get_annotations: "Reading annotations",
+	zotero_export_items: "Exporting citations",
 	zotero_get_pdf_info: "Opening a PDF",
 	zotero_get_page_image: "Looking at a page",
 	zotero_batch_update_tags: "Updating tags",

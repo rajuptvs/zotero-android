@@ -10,7 +10,7 @@ ZoteroAI.McpRemote = {
 	CONNECT_MS: 10 * 1000,
 	CALL_MS: 60 * 1000,
 	MAX_SCHEMA_CHARS: 8000,
-	MAX_RESPONSE_CHARS: 5 * 1024 * 1024,
+	MAX_RESPONSE_BYTES: 5 * 1024 * 1024,
 	IMAGE_TYPES: ["image/png", "image/jpeg", "image/gif", "image/webp"],
 	MAX_IMAGE_CHARS: 4000000,
 	MAX_IMAGES: 4,
@@ -198,9 +198,28 @@ ZoteroAI.McpRemote = {
 				let response = await fetch(this.url, { method: "POST", headers: this._headers(), body: JSON.stringify(body), signal: controller.signal, redirect: "error" });
 				let session = response.headers.get("mcp-session-id");
 				if (session) this.sessionId = session;
-				if (Number(response.headers.get("content-length")) > ZoteroAI.McpRemote.MAX_RESPONSE_CHARS) throw new Error("response too large");
-				let text = await response.text();
-				if (text.length > ZoteroAI.McpRemote.MAX_RESPONSE_CHARS) throw new Error("response too large");
+				let max = ZoteroAI.McpRemote.MAX_RESPONSE_BYTES;
+				if (Number(response.headers.get("content-length")) > max) throw new Error("response too large");
+				// Count bytes as they arrive, so a reply without a length can't grow past the limit.
+				let reader = response.body?.getReader();
+				let chunks = [], length = 0;
+				while (reader) {
+					let { done, value } = await reader.read();
+					if (done) break;
+					if (length + value.length > max) {
+						reader.cancel().catch(() => {});
+						throw new Error("response too large");
+					}
+					chunks.push(value);
+					length += value.length;
+				}
+				let bytes = new Uint8Array(length);
+				let p = 0;
+				for (let chunk of chunks) {
+					bytes.set(chunk, p);
+					p += chunk.length;
+				}
+				let text = new TextDecoder().decode(bytes);
 				if (!response.ok && response.status != 202) throw new Error(`HTTP ${response.status}`);
 				return { text, type: (response.headers.get("content-type") || "").split(";")[0].trim() };
 			}

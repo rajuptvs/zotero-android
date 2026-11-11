@@ -19,6 +19,7 @@ TOOLS = [
     {"name": "picture", "description": "Returns an image and a caption.", "inputSchema": {"type": "object", "properties": {}}},
     {"name": "gallery", "description": "Returns five images.", "inputSchema": {"type": "object", "properties": {}}},
     {"name": "broken", "description": "Always fails.", "inputSchema": {"type": "object", "properties": {}}},
+    {"name": "flood", "description": "Replies with 6 MiB and no Content-Length.", "inputSchema": {"type": "object", "properties": {}}},
     {"name": "weird.name/v2", "description": "x" * 800},
 ]
 
@@ -57,6 +58,8 @@ class Fixture:
                 elif method == "tools/call":
                     name, args = msg["params"]["name"], msg["params"].get("arguments", {})
                     fixture.calls.append({"name": name, "arguments": args, "path": self.path})
+                    if name == "flood":
+                        return self._flood(msg["id"])
                     result = fixture.call(name, args)
                 else:
                     return self._send(200, json.dumps({"jsonrpc": "2.0", "id": msg["id"], "error": {"code": -32601, "message": "nope"}}), "application/json")
@@ -65,6 +68,20 @@ class Fixture:
                     body = 'event: message\ndata: {"jsonrpc":"2.0","method":"notifications/message","params":{}}\n\n' + f"event: message\ndata: {reply}\n\n"
                     return self._send(200, body, "text/event-stream", headers)
                 self._send(200, reply, "application/json", headers)
+
+            def _flood(self, msg_id):
+                """A reply past the clients' 5 MiB limit, delimited only by closing the connection."""
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Connection", "close")
+                self.end_headers()
+                try:
+                    self.wfile.write(f'{{"jsonrpc":"2.0","id":{msg_id},"result":{{"content":[{{"type":"text","text":"'.encode())
+                    for _ in range(96):
+                        self.wfile.write(b"x" * 65536)
+                    self.wfile.write(b'"}]}}')
+                except (BrokenPipeError, ConnectionResetError):
+                    pass  # the client stopped reading, as it should
 
             def _send(self, status, body, ctype, headers=None):
                 data = body.encode("utf-8")

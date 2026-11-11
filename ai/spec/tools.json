@@ -5,16 +5,37 @@
     {
       "type": "function",
       "name": "zotero_search_items",
-      "description": "Search the user's Zotero library for regular items (papers, books, web pages, ...; never attachments, notes or annotations). Every word of the query must match the title, an author name, the year or a tag. Use an empty query with a tag or collection_key to list items by that filter.",
+      "description": "Search the user's Zotero library for regular items (papers, books, web pages, ...; never attachments, notes or annotations). Every word of the query must match. mode \"metadata\" (default) looks in the title, author names, year and tags; \"everything\" also looks in every other field (abstract, publication, DOI, extra, ...), the item's notes, annotations and attachment titles, and the full text of its PDFs and other attachments. Use an empty query with filters to list items. Results are in title order; use offset to page through them.",
       "parameters": {
         "type": "object",
         "properties": {
           "query": {"type": "string", "description": "Words to look for. May be empty."},
           "tag": {"type": ["string", "null"], "description": "Only items with exactly this tag."},
           "collection_key": {"type": ["string", "null"], "description": "Only items directly in this collection."},
-          "limit": {"type": ["integer", "null"], "description": "Maximum results, 1-100. Default 20."}
+          "limit": {"type": ["integer", "null"], "description": "Maximum results, 1-100. Default 20."},
+          "offset": {"type": ["integer", "null"], "description": "Skip this many results first, to get the next page. Default 0."},
+          "mode": {"type": ["string", "null"], "enum": ["metadata", "everything", null], "description": "Where the words are looked for: \"metadata\" (default) or \"everything\" (also all fields, notes, annotations and full text)."},
+          "item_type": {"type": ["string", "null"], "description": "Only items of this Zotero item type, e.g. journalArticle, preprint, book, conferencePaper."},
+          "year_from": {"type": ["integer", "null"], "description": "Only items from this year or later (items without a year are left out)."},
+          "year_to": {"type": ["integer", "null"], "description": "Only items from this year or earlier (items without a year are left out)."}
         },
-        "required": ["query", "tag", "collection_key", "limit"],
+        "required": ["query", "tag", "collection_key", "limit", "offset", "mode", "item_type", "year_from", "year_to"],
+        "additionalProperties": false
+      },
+      "strict": true,
+      "x-write": false
+    },
+    {
+      "type": "function",
+      "name": "zotero_semantic_search",
+      "description": "Find items by meaning rather than exact words, using the library's semantic search index (full text, abstracts and notes). Use for conceptual questions (\"papers about making attention cheaper\"); use zotero_search_items for names, titles or exact terms. Returns each item's best matching passages. Items added after the index was built aren't found.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query": {"type": "string", "description": "What to look for, in natural language."},
+          "limit": {"type": ["integer", "null"], "description": "Maximum items, 1-20. Default 10."}
+        },
+        "required": ["query", "limit"],
         "additionalProperties": false
       },
       "strict": true,
@@ -38,14 +59,15 @@
     {
       "type": "function",
       "name": "zotero_get_item_fulltext",
-      "description": "Get the extracted full text of an item's PDF/EPUB/snapshot (from Zotero's synced full-text index). Use to read a paper that isn't the one open in the reader.",
+      "description": "Get the extracted full text of an item's PDF/EPUB/snapshot (from Zotero's synced full-text index). Use to read a paper that isn't the one open in the reader. Long texts come in parts: if truncated is true, call again with start set to start + the length of the text you got.",
       "parameters": {
         "type": "object",
         "properties": {
           "item_key": {"type": "string", "description": "Key of the item or of the attachment itself."},
-          "max_chars": {"type": ["integer", "null"], "description": "Truncate to this many characters. Default 20000, max 100000."}
+          "max_chars": {"type": ["integer", "null"], "description": "Truncate to this many characters. Default 20000, max 100000."},
+          "start": {"type": ["integer", "null"], "description": "Start at this character offset (0-based). Default 0."}
         },
-        "required": ["item_key", "max_chars"],
+        "required": ["item_key", "max_chars", "start"],
         "additionalProperties": false
       },
       "strict": true,
@@ -67,9 +89,10 @@
         "type": "object",
         "properties": {
           "collection_key": {"type": "string"},
-          "limit": {"type": ["integer", "null"], "description": "Maximum results, 1-100. Default 50."}
+          "limit": {"type": ["integer", "null"], "description": "Maximum results, 1-100. Default 50."},
+          "offset": {"type": ["integer", "null"], "description": "Skip this many results first, to get the next page. Default 0."}
         },
-        "required": ["collection_key", "limit"],
+        "required": ["collection_key", "limit", "offset"],
         "additionalProperties": false
       },
       "strict": true,
@@ -82,9 +105,10 @@
       "parameters": {
         "type": "object",
         "properties": {
-          "limit": {"type": ["integer", "null"], "description": "Maximum results, 1-500. Default 200."}
+          "limit": {"type": ["integer", "null"], "description": "Maximum results, 1-500. Default 200."},
+          "offset": {"type": ["integer", "null"], "description": "Skip this many results first, to get the next page. Default 0."}
         },
-        "required": ["limit"],
+        "required": ["limit", "offset"],
         "additionalProperties": false
       },
       "strict": true,
@@ -114,9 +138,10 @@
         "properties": {
           "item_key": {"type": ["string", "null"], "description": "Only child notes of this item."},
           "query": {"type": ["string", "null"], "description": "Only notes whose text contains this (case-insensitive)."},
-          "limit": {"type": ["integer", "null"], "description": "Maximum results, 1-50. Default 20."}
+          "limit": {"type": ["integer", "null"], "description": "Maximum results, 1-50. Default 20."},
+          "offset": {"type": ["integer", "null"], "description": "Skip this many results first, to get the next page. Default 0."}
         },
-        "required": ["item_key", "query", "limit"],
+        "required": ["item_key", "query", "limit", "offset"],
         "additionalProperties": false
       },
       "strict": true,
@@ -132,6 +157,22 @@
           "item_key": {"type": "string", "description": "Key of the item or of the attachment."}
         },
         "required": ["item_key"],
+        "additionalProperties": false
+      },
+      "strict": true,
+      "x-write": false
+    },
+    {
+      "type": "function",
+      "name": "zotero_export_items",
+      "description": "Export items as citation data: CSL-JSON or BibTeX (with citation keys), as zotero.org exports them. Use when the user wants references, a bibliography file or BibTeX entries.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "item_keys": {"type": "array", "items": {"type": "string"}, "description": "Keys of regular items, 1-50."},
+          "format": {"type": "string", "enum": ["csl_json", "bibtex"], "description": "csl_json or bibtex."}
+        },
+        "required": ["item_keys", "format"],
         "additionalProperties": false
       },
       "strict": true,

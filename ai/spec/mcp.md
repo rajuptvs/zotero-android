@@ -22,10 +22,45 @@ approval UI. `ai/conformance/run.py` checks a host against part A (`class Mcp`, 
   `instructions` = `prompts.json` → `mcp`), `ping`, `tools/list`, `tools/call`.
 
 ### Auth
-- Every request carries `Authorization: Bearer <token>`; missing, wrong or revoked → 401 with a
+- Every request carries `Authorization: Bearer <token>` (the scheme is case-insensitive; spaces or
+  tabs around the token are ignored); missing, wrong or revoked → 401 with a
   JSON-RPC error body and no `WWW-Authenticate` (no OAuth). Never in a URL.
 - A token belongs to one client with a scope: `read` (read tools only) or `write` (may request
   changes), and an `autoApprove` flag set only in the host's own UI.
+
+### OAuth (optional)
+A host may also offer OAuth as follows, for remote clients (claude.ai and ChatGPT connectors, agents
+on other machines). It is off unless the user turns it on, and needs the public `https` origin the
+host is reached at (`<base>`; the endpoint is `<base>/mcp`). The bearer rules above still hold; with
+OAuth on, the 401 additionally carries `WWW-Authenticate`. The standalone server implements this
+(`--public-url … --oauth`); the desktop host doesn't.
+- Follows the MCP authorization spec (2025-06-18 and 2025-11-25). Protected resource metadata
+  (RFC 9728) at `/.well-known/oauth-protected-resource/mcp` and `/.well-known/oauth-protected-resource`:
+  `resource` = `<base>/mcp`, `authorization_servers` = [`<base>`], `scopes_supported` = `read write`.
+  Authorization server metadata (RFC 8414) at `/.well-known/oauth-authorization-server`, with
+  `code_challenge_methods_supported: ["S256"]`.
+- A 401 carries `WWW-Authenticate: Bearer resource_metadata="<base>/.well-known/oauth-protected-resource/mcp", scope="read write"`,
+  plus `error="invalid_token"` when a token was sent.
+- Clients register by dynamic client registration (RFC 7591). Redirect URIs are `https` or `http`
+  on a loopback address, matched exactly; the token request must repeat the authorization
+  request's `redirect_uri`.
+- Authorization code with PKCE `S256` only. The `resource` parameter (RFC 8707), when sent to the
+  authorization or token endpoint, must be `<base>/mcp` (scheme and host case-insensitive, a
+  trailing slash ignored), else `invalid_target`.
+- Consent happens in the host's own UI, behind the same login as its approvals, and is never
+  automatic. It shows the client's name and its redirect host (with a warning for loopback), and
+  the user picks `read` or `write` whatever the client asked for. Consent requests are CSRF-protected.
+- Each approved authorization becomes a client of the bearer kind's model: same scope rules,
+  approvals, `autoApprove` (off at first) and revocation, listed with the others. Its access tokens
+  are short-lived (1 h), refresh tokens rotate on every use (30 days since the last), and both are
+  stored hashed. Revoking the client ends both. A replayed authorization code or a rotated-out
+  refresh token (any earlier generation, until it would have expired) revokes the client it issued,
+  except that the token rotated out last, within 30 s of its rotation (parallel refreshes), gets
+  just `invalid_grant`. A host may bound how many rotated-out tokens it remembers per client, but
+  never by forgetting one that hasn't expired: a refresh that would need more ends the client
+  (reconnect). The token response's `scope` is `read` or `read write`.
+- A `read` client calling a write tool still gets the read-only tool result above (not a 403
+  `insufficient_scope`).
 
 ### Tools
 - The catalog is derived from `tools.json` (conformance recomputes it):
@@ -68,10 +103,13 @@ approval UI. `ai/conformance/run.py` checks a host against part A (`class Mcp`, 
   that **succeeded** within the last **2 min**. That covers a lost response, but also means an
   intentional identical write within 2 min returns the earlier result. Declined, expired or failed
   operations don't replay: an identical call asks again. Replay state doesn't survive a restart.
+- Admission is atomic: the host describes the write first, then checks again that the client
+  still has write scope and the server is on, and only then joins, limits and adds the operation
+  with nothing in between, so concurrent identical calls make one operation and the limits hold.
 - Limits: at most 5 open operations per client and 10 in all; beyond that
   `{"error":"unavailable","message":"Too many changes are waiting for approval in Zotero."}`.
 - Revoking a client, turning the server off, or shutting down declines that client's (or all)
-  open operations.
+  operations still waiting for approval; one already running finishes.
 
 ## B. Desktop host (Zotero 10 plugin)
 

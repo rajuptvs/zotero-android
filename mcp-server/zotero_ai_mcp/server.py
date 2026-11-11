@@ -1,6 +1,7 @@
 """The standalone Zotero AI MCP server (ai/spec/mcp.md, part A): the ai/spec tools over MCP against the
 Zotero Web API, so agents can use the library with Zotero closed. Changes wait for approval on the
-server's own page (/admin), protected by an admin password that agents never have.
+server's own page (/admin), protected by an admin password that agents never have. Remote clients
+can also connect with OAuth (oauth.py) when the server runs with --oauth.
 """
 import base64
 import hashlib
@@ -11,15 +12,21 @@ import os
 import secrets
 import threading
 import time
+import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+
+class HTTPServer(ThreadingHTTPServer):
+    request_queue_size = 128  # the default backlog of 5 resets bursts of new connections
 
 from .approvals import Approvals
 from .library import Library
+from .oauth import OAuth, is_loopback
 from .spec import Spec
+from .throttle import Throttle, client_address
 
 PROTOCOLS = ["2025-11-25", "2025-06-18"]
 LONE_SURROGATE = re.compile("[\ud800-\udfff]")
-HOLD_SECONDS = 20
 READ_ONLY = {"error": "declined", "message": "This connection is read-only."}
 MAX_BODY = 1024 * 1024
 SESSION_SECONDS = 12 * 3600
@@ -69,7 +76,13 @@ class State:
     # Clients
 
     def clients(self):
-        return [{k: v for k, v in c.items() if k != "tokenHash"} for c in self.data["clients"]]
+        out = []
+        for c in self.data["clients"]:
+            view = {k: v for k, v in c.items() if k not in ("tokenHash", "oauth")}
+            if c.get("oauth"):  # connected with OAuth: show where its tokens go, never the hashes
+                view["oauth"] = {"redirectHost": urllib.parse.urlsplit(c["oauth"]["redirectUri"]).hostname}
+            out.append(view)
+        return out
 
     def get(self, client_id):
         return next((c for c in self.data["clients"] if c["id"] == client_id), None)
@@ -101,13 +114,15 @@ class State:
                 self.save()
 
     def authenticate(self, header):
-        if not header or not header.startswith("Bearer zai_"):
+        # The scheme is case-insensitive (RFC 9110).
+        m = re.match(r"(?i)bearer[ \t]+(zai_[A-Za-z0-9_-]+)[ \t]*$", header or "")
+        if not m:
             return None
         self.refresh()
-        digest = token_hash(header[len("Bearer "):].strip())
+        digest = token_hash(m.group(1))
         found = None
         for c in self.data["clients"]:
-            if hmac.compare_digest(c["tokenHash"], digest):
+            if c.get("tokenHash") and hmac.compare_digest(c["tokenHash"], digest):
                 found = c
         return found
 
@@ -131,14 +146,19 @@ class State:
 
 
 class Server:
-    def __init__(self, library, spec, state, host, port, allowed_hosts=(), test_hooks=False):
+    def __init__(self, library, spec, state, host, port, allowed_hosts=(), test_hooks=False, public_url=None, oauth=False):
         self.library, self.spec, self.state = library, spec, state
         self.test_hooks = test_hooks
         self.approvals = Approvals(spec, library, state, lambda: self.state.data.get("enabled", True))
         state.on_revoked = self.approvals.client_revoked
-        self.login_failures = []  # times of recent failed logins (all clients)
+        self.login_failures = Throttle(5, 600)  # failed sign-ins per (address, loopback Host)
+        self.login_delay = 1.0  # seconds a wrong password waits
         self.sessions = {}  # admin session → {csrf, expires}
         self.allowed_hosts = {f"127.0.0.1:{port}", f"localhost:{port}", f"[::1]:{port}", *allowed_hosts}
+        self.public_url = public_url  # normalized by oauth.normalize_public_url
+        if public_url:
+            self.allowed_hosts.add(urllib.parse.urlsplit(public_url).netloc)
+        self.oauth = OAuth(self, public_url) if oauth else None
         server = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -157,7 +177,10 @@ class Server:
             def do_DELETE(self):
                 server.dispatch(self, "DELETE")
 
-        self.httpd = ThreadingHTTPServer((host, port), Handler)
+            def do_OPTIONS(self):
+                server.dispatch(self, "OPTIONS")
+
+        self.httpd = HTTPServer((host, port), Handler)
         self.httpd.daemon_threads = True
 
     # region HTTP plumbing
@@ -202,6 +225,8 @@ class Server:
                 return self.mcp(h, method)
             if path == "/admin" or path.startswith("/admin/"):
                 return self.admin(h, method, path)
+            if self.oauth and (path.startswith("/.well-known/") or path.startswith("/oauth/")):
+                return self.oauth.handle(h, method, path)
             self.send(h, 404, {"error": "not found"})
         except Exception:  # noqa: BLE001 — one request, not the server
             import traceback
@@ -223,9 +248,12 @@ class Server:
             return self.send(h, 403, err(-32000, "Requests from web pages aren't allowed."))
         if not self.state.data.get("enabled", True):
             return self.send(h, 503, err(-32000, "The server is turned off."))
-        client = self.state.authenticate(h.headers.get("Authorization"))
+        auth = h.headers.get("Authorization")
+        client = self.state.authenticate(auth) or (self.oauth and self.oauth.authenticate(auth))
         if not client:
-            return self.send(h, 401, err(-32000, "Missing or invalid token. Add this agent on the server (python3 -m zotero_ai_mcp add-client)."))
+            # With OAuth on, the challenge points clients at the metadata (RFC 9728); otherwise none.
+            challenge = {"WWW-Authenticate": self.oauth.challenge(bool(auth))} if self.oauth else None
+            return self.send(h, 401, err(-32000, "Missing or invalid token. Add this agent on the server (python3 -m zotero_ai_mcp add-client)."), headers=challenge)
         if (h.headers.get("Content-Type") or "").split(";")[0].strip().lower() != "application/json":
             return self.send(h, 415, err(-32000, "Send JSON (Content-Type: application/json)."))
         version = h.headers.get("MCP-Protocol-Version")
@@ -285,13 +313,13 @@ class Server:
             op = self.approvals.get(checked["args"]["approval_id"], client["id"])
             if not op:
                 return result({"error": "not_found", "message": "No change with that approval_id."})
-            self.approvals.wait(op, HOLD_SECONDS)
+            self.approvals.wait(op, self.approvals.timing["holdMs"] / 1000)
             return result(self.approvals.envelope(op))
         if tool.get("x-write"):
             op, refused = self.approvals.request(client, name, args)
             if not op:
                 return result(refused)
-            self.approvals.wait(op, HOLD_SECONDS)
+            self.approvals.wait(op, self.approvals.timing["holdMs"] / 1000)
             return result(self.approvals.envelope(op))
         checked = self.spec.validate_args(name, args)
         if "error" in checked:
@@ -324,22 +352,26 @@ class Server:
         if method != "POST" and path != "/admin/api/state":
             return self.send(h, 405, headers={"Allow": "POST"})
         if path == "/admin/api/login":
-            # One throttle for everyone: after 5 failures in 10 minutes, wait for them to age out.
-            now = time.time()
-            self.login_failures = [t for t in self.login_failures if now - t < 600]
-            if len(self.login_failures) >= 5:
+            # After 5 failures in 10 minutes from one address, wait for them to age out. Sign-ins on a
+            # loopback Host count apart, so guessing through the public address can't lock out the owner.
+            host = urllib.parse.urlsplit("//" + (h.headers.get("Host") or "")).hostname
+            bucket = (client_address(h), is_loopback(host))
+            # Each attempt is counted before the password is checked (and given back if it's right), so
+            # parallel requests can't all slip in while the slow hash runs.
+            if not self.login_failures.take(bucket):
                 return self.send(h, 429, {"error": "Too many attempts. Try again in a few minutes."})
             try:
                 body = self.read_json(h) or {}
             except (ValueError, UnicodeEncodeError):
                 body = {}
             if not self.state.check_admin_password(str(body.get("password", ""))):
-                self.login_failures.append(now)
-                time.sleep(1)
+                time.sleep(self.login_delay)
                 return self.send(h, 403, {"error": "Wrong password."})
+            self.login_failures.refund(bucket)
             sid, csrf = secrets.token_urlsafe(32), secrets.token_urlsafe(24)
             self.sessions[sid] = {"csrf": csrf, "expires": time.time() + SESSION_SECONDS}
-            secure = "; Secure" if h.headers.get("X-Forwarded-Proto") == "https" else ""
+            behind_https = self.public_url and self.public_url.startswith("https://") and h.headers.get("Host") == urllib.parse.urlsplit(self.public_url).netloc
+            secure = "; Secure" if h.headers.get("X-Forwarded-Proto") == "https" or behind_https else ""
             return self.send(h, 200, {"csrf": csrf}, headers={"Set-Cookie": f"zai_admin={sid}; HttpOnly; SameSite=Strict; Path=/admin{secure}"})
         sid, session = self.session(h)
         if not session:
@@ -360,9 +392,10 @@ class Server:
             client, token = self.state.create_client(body.get("name"), body.get("scope"))
             return self.send(h, 200, {"client": client, "token": token})
         if path == "/admin/api/revoke":
-            self.state.revoke(str(body.get("id")))
-            self.approvals.client_revoked(str(body.get("id")))
+            self.revoke_client(str(body.get("id")))
             return self.send(h, 200, {"ok": True})
+        if path.startswith("/admin/api/oauth/") and self.oauth:
+            return self.send(h, *self.oauth.admin_api(path, body))
         if path == "/admin/api/auto-approve":
             self.state.set_auto_approve(str(body.get("id")), body.get("on") is True)
             return self.send(h, 200, {"ok": True})
@@ -387,12 +420,23 @@ class Server:
             except pdf.PdfError as e:
                 return self.send(h, 200, {"result": {"error": e.code, "message": str(e)}})
             return self.send(h, 200, {"result": {"pageCount": count, "width": width, "height": height}, "image": base64.b64encode(jpeg).decode("ascii")})
+        if self.test_hooks and path == "/admin/api/semantic":
+            # Semantic search checks from the conformance suite (same code as zotero_semantic_search).
+            semantic = getattr(self.library, "semantic", None)
+            if not semantic:
+                return self.send(h, 200, {"error": "unavailable", "message": "This server has no semantic search."})
+            return self.send(h, 200, semantic.hook(body))
         if self.test_hooks and path == "/admin/api/restart":
             self.approvals.decline_all()
             return self.send(h, 200, {"ok": True})
         return self.send(h, 404, {"error": "not found"})
 
     # endregion
+
+    def revoke_client(self, client_id):
+        """Removes a client (its token or OAuth tokens stop working) and declines what it's waiting on."""
+        self.state.revoke(client_id)
+        self.approvals.client_revoked(client_id)
 
     def serve_forever(self):
         self.httpd.serve_forever()
@@ -442,7 +486,7 @@ async function refresh(){let s;try{s=await api("/admin/api/state")}catch(e){retu
   yes.onclick=async()=>{if(op.id!==topId||Date.now()-armedAt<1000||!document.hasFocus()||document.visibilityState!="visible"){yes.textContent="Take a second to read it";return}await api("/admin/api/decide",{id:op.id,approved:true});refresh()};
   no.onclick=async()=>{await api("/admin/api/decide",{id:op.id,approved:false});refresh()};row.append(no,yes);c.append(row);p.append(c)}
  const cl=$("clients");cl.replaceChildren();if(!s.clients.length)cl.append(el("p","None yet.","muted"));
- for(const c of s.clients){const card=el("div",null,"card"),row=el("div",null,"row");row.append(el("strong",c.name),el("span",c.scope=="write"?"Read and request changes":"Read only","muted"));
+ for(const c of s.clients){const card=el("div",null,"card"),row=el("div",null,"row");row.append(el("strong",c.name),el("span",(c.scope=="write"?"Read and request changes":"Read only")+(c.oauth?" · OAuth, to "+c.oauth.redirectHost:""),"muted"));
   if(c.scope=="write"){const l=el("label"),b=el("input");b.type="checkbox";b.checked=c.autoApprove;b.onchange=()=>api("/admin/api/auto-approve",{id:c.id,on:b.checked});l.append(b,document.createTextNode(" Approve changes automatically (except trash)"));row.append(l)}
   const r=el("button","Revoke");r.onclick=()=>api("/admin/api/revoke",{id:c.id}).then(refresh);row.append(r);card.append(row);cl.append(card)}}
 api("/admin/api/state").then(s=>{if(s.csrf)csrf=s.csrf;show(true);refresh()}).catch(()=>show(false));

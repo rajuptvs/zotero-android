@@ -13,11 +13,12 @@ ZoteroAI.Approvals = (() => {
 	const DECLINED = Object.freeze({ error: "declined", message: "The user declined this change." });
 	const EXPIRED = Object.freeze({ error: "declined", message: "Nobody answered the approval request in Zotero." });
 	const TOO_MANY = Object.freeze({ error: "unavailable", message: "Too many changes are waiting for approval in Zotero." });
-	// Changed only by the dev test endpoints, to test expiry without waiting minutes.
+	// Changed only by the dev test endpoints, to test expiry and holds without waiting minutes.
 	const timing = {
 		expireMs: 5 * 60 * 1000, // unanswered requests expire
 		keepMs: 10 * 60 * 1000, // finished operations stay readable by approval_id
 		replayMs: 2 * 60 * 1000, // an identical call this soon after success gets the same result
+		holdMs: 20 * 1000, // longest a tool call waits for a decision before returning pending_approval
 	};
 	const MAX_OPEN_PER_CLIENT = 5;
 	const MAX_OPEN = 10;
@@ -104,6 +105,11 @@ ZoteroAI.Approvals = (() => {
 			let checked = ZoteroAI.Spec.validateArgs(name, args);
 			if (checked.error) return { result: checked };
 			let argsJSON = ZoteroAI.canonicalJSON(checked.args);
+			let description = await ZoteroAI.Tools.describeWrite(name, JSON.parse(argsJSON));
+			// From here to ops.set nothing awaits, so concurrent identical calls join one operation
+			// and the limits hold.
+			let current = ZoteroAI.McpClients.get(client.id);
+			if (!current || current.scope != "write" || !ZoteroAI.McpServer.isEnabled()) return { result: DECLINED };
 			prune();
 			let now = Date.now();
 			for (let op of ops.values()) {
@@ -121,7 +127,7 @@ ZoteroAI.Approvals = (() => {
 				clientName: client.name,
 				tool: name,
 				argsJSON,
-				description: await ZoteroAI.Tools.describeWrite(name, JSON.parse(argsJSON)),
+				description,
 				state: "awaiting_approval",
 				createdAt: now,
 				expiresAt: now + timing.expireMs,
@@ -129,7 +135,7 @@ ZoteroAI.Approvals = (() => {
 				result: null,
 			};
 			ops.set(op.id, op);
-			if (ZoteroAI.Spec.shouldAsk(name, client.autoApprove)) {
+			if (ZoteroAI.Spec.shouldAsk(name, current.autoApprove)) {
 				op._timer = setTimeout(() => finish(op, "expired", EXPIRED), timing.expireMs);
 				notify();
 			}

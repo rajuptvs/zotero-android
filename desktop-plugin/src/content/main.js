@@ -9,6 +9,7 @@ Object.assign(ZoteroAI, {
 		await this.Spec.load(rootURI);
 		this.TestEndpoints?.register();
 		this.McpServer.startup();
+		await this.Semantic.startup();
 		this.Windows?.startup?.();
 		for (let win of Zotero.getMainWindows()) {
 			if (win.ZoteroPane) this.addToWindow(win);
@@ -28,9 +29,11 @@ Object.assign(ZoteroAI, {
 	shutdown() {
 		this.TestEndpoints?.unregister();
 		this.McpServer.shutdown();
+		this.Semantic.shutdown();
 		this.ApprovalSheet.shutdown();
 		this.ConnectDialog.close();
 		this.McpServersDialog.close();
+		this.SemanticDialog.close();
 		this.Windows?.shutdown?.();
 		for (let win of Zotero.getMainWindows()) this.removeFromWindow(win);
 	},

@@ -13,7 +13,7 @@ async function startup({ id, version, rootURI }) {
 	Services.scriptloader.loadSubScript(rootURI + "content/vendor/marked.umd.js");
 	Services.scriptloader.loadSubScript(rootURI + "content/vendor/katex.min.js");
 	Services.scriptloader.loadSubScript(rootURI + "content/vendor/highlight.min.js");
-	for (let file of ["util", "spec", "notes", "approvals", "tools", "pdf", "auth", "api", "chat", "capture", "panel", "mcpClients", "mcpServer", "mcpRemote", "approvalSheet", "connectDialog", "mcpServersDialog", "windows", "main"]) {
+	for (let file of ["util", "spec", "notes", "approvals", "tools", "pdf", "semantic", "semanticBuilder", "auth", "api", "chat", "capture", "panel", "mcpClients", "mcpServer", "mcpRemote", "approvalSheet", "connectDialog", "mcpServersDialog", "semanticDialog", "windows", "main"]) {
 		Services.scriptloader.loadSubScript(rootURI + `content/${file}.js`);
 	}
 	// Dev builds only (scripts/dev-zotero.sh); the release .xpi doesn't contain it.

@@ -1,0 +1,47 @@
+{
+  "manifest_version": "0.3",
+  "name": "zotero-ai",
+  "display_name": "Zotero AI",
+  "version": "0.1.0",
+  "description": "Your Zotero library in Claude Desktop, through the Zotero AI desktop plugin or the standalone server.",
+  "long_description": "Connects Claude Desktop to a Zotero AI MCP server: the Zotero AI plugin inside Zotero (Tools → Zotero AI: Connect an agent…) or the standalone server on the Zotero Web API. Claude can search and read your library, notes, annotations and PDF pages. Changes it asks for (tags, collections, notes, new items, the trash) wait until you approve them in Zotero or on the standalone server's approval page.",
+  "author": {
+    "name": "Raju Penmatsa"
+  },
+  "server": {
+    "type": "node",
+    "entry_point": "bridge.mjs",
+    "mcp_config": {
+      "command": "node",
+      "args": ["${__dirname}/bridge.mjs"],
+      "env": {
+        "ZOTERO_AI_MCP_URL": "${user_config.url}",
+        "ZOTERO_AI_MCP_TOKEN": "${user_config.token}"
+      }
+    }
+  },
+  "user_config": {
+    "url": {
+      "type": "string",
+      "title": "Server URL",
+      "description": "The Zotero desktop plugin: http://127.0.0.1:23119/zotero-ai/mcp. The standalone server: its address ending in /mcp, e.g. http://127.0.0.1:8770/mcp.",
+      "default": "http://127.0.0.1:23119/zotero-ai/mcp",
+      "required": true
+    },
+    "token": {
+      "type": "string",
+      "title": "Token",
+      "description": "The zai_… token from Zotero's Connect an agent dialog, or from add-client / the approval page on the standalone server.",
+      "sensitive": true,
+      "required": true
+    }
+  },
+  "keywords": ["zotero", "research", "references", "pdf"],
+  "license": "AGPL-3.0",
+  "compatibility": {
+    "platforms": ["darwin", "win32", "linux"],
+    "runtimes": {
+      "node": ">=18.0.0"
+    }
+  }
+}

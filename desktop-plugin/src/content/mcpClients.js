@@ -65,7 +65,8 @@ ZoteroAI.McpClients = {
 
 	/** The client a request's `Authorization: Bearer zai_…` header belongs to, or null. */
 	async authenticate(header) {
-		let m = /^Bearer\s+(zai_[A-Za-z0-9_-]+)\s*$/.exec(header || "");
+		// The scheme is case-insensitive (RFC 9110).
+		let m = /^bearer[ \t]+(zai_[A-Za-z0-9_-]+)[ \t]*$/i.exec(header || "");
 		if (!m) return null;
 		let hash = await this._hash(m[1]);
 		let found = null;

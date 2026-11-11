@@ -1,0 +1,48 @@
+# docker compose up -d   (from this directory)
+#
+# Put the Zotero API key and the admin password in ./secrets/, readable only by you (chmod 600). The
+# container runs as uid/gid 1000; if yours differ: ZOTERO_UID=$(id -u) ZOTERO_GID=$(id -g) docker compose build
+services:
+  zotero-ai-mcp:
+    build:
+      context: ..
+      dockerfile: mcp-server/Dockerfile
+      args:
+        UID: ${ZOTERO_UID:-1000}
+        GID: ${ZOTERO_GID:-1000}
+    image: zotero-ai-mcp
+    restart: unless-stopped
+    ports:
+      # Loopback only. Reach it from elsewhere through HTTPS you control (tailscale serve, Caddy, …).
+      - "127.0.0.1:8770:8770"
+    volumes:
+      - zotero-ai-data:/data
+    secrets:
+      - zotero_api_key
+      - admin_password
+      # - webdav_password
+    command:
+      - serve
+      - --host=0.0.0.0
+      - --api-key-file=/run/secrets/zotero_api_key
+      - --admin-password-file=/run/secrets/admin_password
+      # Remote MCP clients (claude.ai, ChatGPT) over OAuth, behind your HTTPS proxy:
+      # - --public-url=https://zotero.example.com
+      # - --oauth
+      # Semantic search (downloads a 346 MB model into the volume on first start):
+      # - --semantic
+      # Files on WebDAV:
+      # - --webdav-url=https://dav.example.com/dav
+      # - --webdav-username=me
+      # - --webdav-password-file=/run/secrets/webdav_password
+
+secrets:
+  zotero_api_key:
+    file: ./secrets/zotero-api-key
+  admin_password:
+    file: ./secrets/admin-password
+  # webdav_password:
+  #   file: ./secrets/webdav-password
+
+volumes:
+  zotero-ai-data:

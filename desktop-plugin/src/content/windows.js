@@ -96,8 +96,13 @@ ZoteroAI.Windows = {
 		toolsMenuItem.setAttribute("label", "Zotero AI: Connect an agent…");
 		toolsMenuItem.addEventListener("command", () => ZoteroAI.ConnectDialog.open(win));
 		doc.getElementById("menu_ToolsPopup")?.append(toolsMenuItem);
+		let semanticMenuItem = doc.createXULElement("menuitem");
+		semanticMenuItem.id = "zotero-ai-semantic-search";
+		semanticMenuItem.setAttribute("label", "Zotero AI: Semantic search…");
+		semanticMenuItem.addEventListener("command", () => ZoteroAI.SemanticDialog.open(win));
+		toolsMenuItem.after(semanticMenuItem);
 
-		let entry = { panel, pane, splitter, button, toolsMenuItem };
+		let entry = { panel, pane, splitter, button, toolsMenuItem, semanticMenuItem };
 		this._windows.set(win, entry);
 		this.setOpen(win, !!ZoteroAI.pref("panelOpen"));
 		ZoteroAI.ApprovalSheet?.windowsChanged();
@@ -112,8 +117,10 @@ ZoteroAI.Windows = {
 		entry.splitter.remove();
 		entry.button.remove();
 		entry.toolsMenuItem.remove();
+		entry.semanticMenuItem.remove();
 		this._windows.delete(win);
 		if (ZoteroAI.ConnectDialog._open?.win === win) ZoteroAI.ConnectDialog.close();
+		if (ZoteroAI.SemanticDialog._open?.win === win) ZoteroAI.SemanticDialog.close();
 		ZoteroAI.ApprovalSheet?.windowsChanged();
 	},
 

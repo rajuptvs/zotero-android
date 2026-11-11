@@ -74,6 +74,11 @@ object Libs {
             "org.commonmark:commonmark-ext-gfm-strikethrough:$commonmarkVersion"
     }
 
+    // AI semantic search: the embedding model runs on ONNX Runtime (minSdk 24); the model download
+    // is a WorkManager job.
+    const val onnxRuntime = "com.microsoft.onnxruntime:onnxruntime-android:1.31.1"
+    const val workManager = "androidx.work:work-runtime-ktx:2.11.2"
+
     object OkHttp {
         private const val version = "5.4.0"
         const val core = "com.squareup.okhttp3:okhttp:$version"

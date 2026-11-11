@@ -185,6 +185,10 @@ dependencies {
     implementation(Libs.Markdown.commonmarkTables)
     implementation(Libs.Markdown.commonmarkStrikethrough)
 
+    //AI semantic search
+    implementation(Libs.onnxRuntime)
+    implementation(Libs.workManager)
+
 }
 
 kapt {

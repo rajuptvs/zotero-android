@@ -12,6 +12,7 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import okio.Buffer
 import org.zotero.android.ai.auth.ChatGptCredentialStore
 import org.zotero.android.ai.tools.ZoteroToolSpec
 import timber.log.Timber
@@ -255,8 +256,12 @@ class McpRemote @Inject constructor(
                 if (!response.isSuccessful && response.code != 202) throw IllegalStateException("HTTP ${response.code}")
                 val length = response.body?.contentLength() ?: 0
                 if (length > MAX_RESPONSE_BYTES) throw IllegalStateException("response too large")
-                val text = response.peekBody(MAX_RESPONSE_BYTES + 1).string()
-                if (text.length > MAX_RESPONSE_BYTES) throw IllegalStateException("response too large")
+                // Count bytes as they arrive, so a reply without a length can't grow past the limit.
+                val buffer = Buffer()
+                val source = response.body?.source()
+                while (source != null && buffer.size <= MAX_RESPONSE_BYTES && source.read(buffer, 64 * 1024L) != -1L) Unit
+                if (buffer.size > MAX_RESPONSE_BYTES) throw IllegalStateException("response too large")
+                val text = buffer.readUtf8()
                 return text to (response.header("content-type")?.substringBefore(';')?.trim().orEmpty())
             }
         }

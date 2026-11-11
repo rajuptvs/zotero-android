@@ -9,7 +9,6 @@
 ZoteroAI.McpServer = {
 	PATH: "/zotero-ai/mcp",
 	PROTOCOLS: ["2025-11-25", "2025-06-18"],
-	HOLD_MS: 20 * 1000, // longest a call waits for a decision before returning pending_approval
 	READ_ONLY: Object.freeze({ error: "declined", message: "This connection is read-only." }),
 	_registered: false,
 	_debugLog: null,
@@ -166,13 +165,13 @@ ZoteroAI.McpServer = {
 			if (checked.error) return toolResult(checked);
 			let op = ZoteroAI.Approvals.get(checked.args.approval_id, client.id);
 			if (!op) return toolResult({ error: "not_found", message: "No change with that approval_id." });
-			await ZoteroAI.Approvals.wait(op, this.HOLD_MS);
+			await ZoteroAI.Approvals.wait(op, ZoteroAI.Approvals.timing.holdMs);
 			return toolResult(ZoteroAI.Approvals.envelope(op));
 		}
 		if (tool["x-write"] === true) {
 			let { op, result } = await ZoteroAI.Approvals.request({ client, name, args });
 			if (!op) return toolResult(result);
-			await ZoteroAI.Approvals.wait(op, this.HOLD_MS);
+			await ZoteroAI.Approvals.wait(op, ZoteroAI.Approvals.timing.holdMs);
 			return toolResult(ZoteroAI.Approvals.envelope(op));
 		}
 		return toolResult(await ZoteroAI.Tools.execute(name, args));

@@ -17,6 +17,8 @@ import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.zotero.android.ai.chat.ChatMarkdown
+import org.zotero.android.ai.semantic.SemanticIndex
+import org.zotero.android.ai.semantic.SemanticSearch
 import org.zotero.android.architecture.Defaults
 import org.zotero.android.attachmentdownloader.AttachmentDownloader
 import org.zotero.android.attachmentdownloader.AttachmentDownloaderEventStream
@@ -46,6 +48,7 @@ import org.zotero.android.screens.addbyidentifier.TranslatorLoadedEventStream
 import org.zotero.android.screens.addbyidentifier.data.IdentifierLookupMode
 import org.zotero.android.sync.KeyGenerator
 import org.zotero.android.sync.LibraryIdentifier
+import org.zotero.android.sync.LinkMode
 import org.zotero.android.sync.Note
 import org.zotero.android.sync.SchemaController
 import org.zotero.android.sync.Tag
@@ -76,6 +79,7 @@ class ZoteroTools @Inject constructor(
     private val fileStore: FileStore,
     private val attachmentDownloader: AttachmentDownloader,
     private val attachmentDownloaderEventStream: AttachmentDownloaderEventStream,
+    private val semanticSearch: SemanticSearch,
 ) {
     private val libraryId: LibraryIdentifier = LibraryIdentifier.custom(RCustomLibraryType.myLibrary)
     private val http = OkHttpClient.Builder().callTimeout(30, TimeUnit.SECONDS).build()
@@ -92,8 +96,10 @@ class ZoteroTools @Inject constructor(
             "zotero_get_recent" -> read { getRecent(it, args) }
             "zotero_get_notes" -> read { getNotes(it, args) }
             "zotero_get_annotations" -> read { getAnnotations(it, args.str("item_key")) }
+            "zotero_export_items" -> exportItems(args)
             "zotero_get_pdf_info" -> getPdfInfo(args)
             "zotero_get_page_image" -> getPageImage(args)
+            "zotero_semantic_search" -> semanticSearch(args)
             "zotero_batch_update_tags" -> batchUpdateTags(args)
             "zotero_set_item_collections" -> setItemCollections(args)
             "zotero_create_collection" -> createCollection(args)
@@ -164,14 +170,37 @@ class ZoteroTools @Inject constructor(
 
     // region Reads
 
-    private suspend fun searchItems(args: JsonObject): JsonObject = read { realm ->
+    private suspend fun searchItems(args: JsonObject): JsonObject {
         val words = args.strOrNull("query").orEmpty().lowercase().split(Regex("\\s+"))
             .filter { it.isNotEmpty() }
+        val mode = args.get("mode")?.takeUnless { it.isJsonNull }
+        val everything = when {
+            mode == null -> false
+            mode.isJsonPrimitive && mode.asJsonPrimitive.isString && mode.asString == "metadata" -> false
+            mode.isJsonPrimitive && mode.asJsonPrimitive.isString && mode.asString == "everything" -> true
+            else -> throw ToolError("invalid_argument", "mode must be metadata or everything.")
+        }
+        val fulltext = if (everything) words.associateWith { fulltextMatches(it) } else emptyMap()
+        return read { realm -> searchItems(realm, args, words, everything, fulltext) }
+    }
+
+    private fun searchItems(
+        realm: Realm,
+        args: JsonObject,
+        words: List<String>,
+        everything: Boolean,
+        fulltext: Map<String, Set<String>>,
+    ): JsonObject {
         val tag = args.strOrNull("tag")
         val collectionKey = args.strOrNull("collection_key")
+        val itemType = args.strOrNull("item_type")
+        val yearFrom = args.intOrNull("year_from")
+        val yearTo = args.intOrNull("year_to")
         val limit = args.limit("limit", default = 20, max = 100)
+        val offset = args.offset()
         var items = regularItems(realm).filter { item ->
-            words.all { word -> searchableTexts(item).any { it.contains(word) } }
+            val texts = searchableTexts(item) + if (everything) searchableEverything(item) else emptyList()
+            words.all { word -> texts.any { it.contains(word) } || fulltext[word]?.contains(item.key) == true }
         }
         if (tag != null) items = items.filter { item -> tagNames(item).contains(tag) }
         if (collectionKey != null) {
@@ -179,12 +208,70 @@ class ZoteroTools @Inject constructor(
                 item.collections?.any { it.key == collectionKey && !it.deleted && !it.trash } == true
             }
         }
+        if (itemType != null) items = items.filter { it.rawType == itemType }
+        if (yearFrom != null || yearTo != null) {
+            items = items.filter { item ->
+                val year = year(item).toIntOrNull()
+                year != null && (yearFrom == null || year >= yearFrom) && (yearTo == null || year <= yearTo)
+            }
+        }
         val sorted = items.sortedWith(titleOrder)
-        JsonObject().apply {
+        return JsonObject().apply {
             addProperty("total", sorted.size)
-            add("items", JsonArray().apply { sorted.take(limit).forEach { add(summary(it)) } })
+            add("items", JsonArray().apply { sorted.drop(offset).take(limit).forEach { add(summary(it)) } })
         }
     }
+
+    /** The extra texts `mode: everything` looks in (tools.md, zotero_search_items). */
+    private fun searchableEverything(item: RItem): List<String> = buildList {
+        item.fields.forEach { add(it.value.lowercase()) }
+        item.children?.filter { !it.trash && !it.deleted }?.forEach { child ->
+            when (child.rawType) {
+                ItemTypes.note -> add(plainText(field(child, FieldKeys.Item.note)).lowercase())
+                ItemTypes.attachment -> {
+                    add(title(child).lowercase())
+                    child.children?.filter { it.rawType == ItemTypes.annotation && !it.trash && !it.deleted }?.forEach {
+                        add(field(it, FieldKeys.Item.Annotation.text).lowercase())
+                        add(field(it, FieldKeys.Item.Annotation.comment).lowercase())
+                    }
+                }
+            }
+        }
+    }
+
+    /** Keys of regular items whose attachments zotero.org's full-text search finds `word` in. */
+    private suspend fun fulltextMatches(word: String): Set<String> {
+        val apiKey = defaults.getApiToken() ?: throw ToolError("unavailable", "Not signed in to Zotero.")
+        val url = okhttp3.HttpUrl.Builder().scheme("https").host("api.zotero.org")
+            .addPathSegments("users/${defaults.getUserId()}/items")
+            .addQueryParameter("q", word)
+            .addQueryParameter("qmode", "everything")
+            .addQueryParameter("format", "keys")
+            .build()
+        val keys = withContext(dispatchers.io) {
+            try {
+                http.newCall(zoteroRequest(url.toString(), apiKey)).execute().use { response ->
+                    if (!response.isSuccessful) throw ToolError("failed", "Zotero Web API: HTTP ${response.code}")
+                    response.body.string().split(Regex("\\s+")).filter { it.isNotEmpty() }
+                }
+            } catch (e: java.io.IOException) {
+                throw ToolError("unavailable", "Searching full text needs zotero.org, which can't be reached.")
+            }
+        }
+        // Only attachments: fields, notes and annotations are matched locally, the same way on every client.
+        return read { realm ->
+            keys.mapNotNull { key ->
+                realm.where<RItem>().key(key, libraryId).findFirst()
+                    ?.takeIf { it.rawType == ItemTypes.attachment && !it.trash && !it.deleted }
+                    ?.parent?.takeIf { isRegular(it) }?.key
+            }.toSet()
+        }
+    }
+
+    private fun zoteroRequest(url: String, apiKey: String): Request = Request.Builder().url(url)
+        .header("Zotero-API-Key", apiKey)
+        .header("Zotero-API-Version", "3")
+        .build()
 
     private fun getItemMetadata(realm: Realm, key: String): JsonObject {
         val item = findItem(realm, key)
@@ -209,6 +296,7 @@ class ZoteroTools @Inject constructor(
             addProperty("doi", field(item, FieldKeys.Item.doi))
             addProperty("url", field(item, FieldKeys.Item.url))
             addProperty("abstract", field(item, FieldKeys.Item.abstractN))
+            addProperty("citationKey", field(item, "citationKey"))
             add("tags", tagsArray(item))
             add("collections", JsonArray().apply {
                 item.collections?.filter { !it.deleted && !it.trash }
@@ -242,6 +330,7 @@ class ZoteroTools @Inject constructor(
 
     private suspend fun getItemFulltext(args: JsonObject): JsonObject {
         val maxChars = args.limit("max_chars", default = 20000, max = 100000)
+        val start = (args.intOrNull("start") ?: 0).coerceAtLeast(0)
         val attachmentKey = read { realm ->
             resolveTextAttachment(realm, findItem(realm, args.str("item_key")))?.key.orEmpty()
         }.ifEmpty { throw ToolError("not_found", "This item has no PDF, EPUB or snapshot.") }
@@ -263,11 +352,13 @@ class ZoteroTools @Inject constructor(
                 JsonParser.parseString(response.body.string()).asJsonObject.get("content")?.asString.orEmpty()
             }
         }
+        val from = start.coerceAtMost(text.length)
+        val part = text.substring(from, (from.toLong() + maxChars).coerceAtMost(text.length.toLong()).toInt())
         return JsonObject().apply {
             addProperty("attachmentKey", attachmentKey)
             addProperty("totalChars", text.length)
-            addProperty("truncated", text.length > maxChars)
-            addProperty("text", text.take(maxChars))
+            addProperty("truncated", from + part.length < text.length)
+            addProperty("text", part)
         }
     }
 
@@ -328,25 +419,28 @@ class ZoteroTools @Inject constructor(
         }
         val file = fileStore.attachmentFile(libraryId = attachment.libraryId, key = attachment.key, filename = kind.filename)
         if (kind.location != Attachment.FileLocation.local || !file.exists()) {
-            val update = coroutineScope {
-                // Subscribe before asking, so the result can't be missed.
-                val waiter = async(start = kotlinx.coroutines.CoroutineStart.UNDISPATCHED) {
-                    withTimeoutOrNull(TimeUnit.MINUTES.toMillis(3)) {
-                        attachmentDownloaderEventStream.flow().first { update ->
-                            update.key == attachment.key && update.libraryId == attachment.libraryId &&
-                                    update.kind !is AttachmentDownloader.Update.Kind.progress
-                        }
-                    }
-                }
-                attachmentDownloader.downloadIfNeeded(attachment, parentKey)
-                waiter.await()
-            }
+            val inTime = download(attachment, parentKey, TimeUnit.MINUTES.toMillis(3))
             // A failure or cancellation from another download of the same file still counts if the file arrived.
             if (!file.exists()) {
-                throw ToolError("unavailable", if (update == null) "Downloading this PDF took too long." else "Couldn't download this PDF.")
+                throw ToolError("unavailable", if (!inTime) "Downloading this PDF took too long." else "Couldn't download this PDF.")
             }
         }
         return attachment.key to file
+    }
+
+    /** Downloads an attachment's file (Zotero storage or WebDAV); false if it took too long. */
+    private suspend fun download(attachment: Attachment, parentKey: String?, timeoutMillis: Long): Boolean = coroutineScope {
+        // Subscribe before asking, so the result can't be missed.
+        val waiter = async(start = kotlinx.coroutines.CoroutineStart.UNDISPATCHED) {
+            withTimeoutOrNull(timeoutMillis) {
+                attachmentDownloaderEventStream.flow().first { update ->
+                    update.key == attachment.key && update.libraryId == attachment.libraryId &&
+                            update.kind !is AttachmentDownloader.Update.Kind.progress
+                }
+            }
+        }
+        attachmentDownloader.downloadIfNeeded(attachment, parentKey)
+        waiter.await() != null
     }
 
     private fun getCollections(realm: Realm): JsonObject {
@@ -369,6 +463,7 @@ class ZoteroTools @Inject constructor(
     private fun getCollectionItems(realm: Realm, args: JsonObject): JsonObject {
         val collection = findCollection(realm, args.str("collection_key"))
         val limit = args.limit("limit", default = 50, max = 100)
+        val offset = args.offset()
         val items = collection.items.filter { isRegular(it) }.sortedWith(titleOrder)
         return JsonObject().apply {
             add("collection", JsonObject().apply {
@@ -376,12 +471,13 @@ class ZoteroTools @Inject constructor(
                 addProperty("name", collection.name)
             })
             addProperty("total", items.size)
-            add("items", JsonArray().apply { items.take(limit).forEach { add(summary(it)) } })
+            add("items", JsonArray().apply { items.drop(offset).take(limit).forEach { add(summary(it)) } })
         }
     }
 
     private fun getTags(realm: Realm, args: JsonObject): JsonObject {
         val limit = args.limit("limit", default = 200, max = 500)
+        val offset = args.offset()
         val counts = mutableMapOf<String, Int>()
         regularItems(realm).forEach { item ->
             tagNames(item).forEach { counts[it] = (counts[it] ?: 0) + 1 }
@@ -394,7 +490,7 @@ class ZoteroTools @Inject constructor(
         return JsonObject().apply {
             addProperty("total", sorted.size)
             add("tags", JsonArray().apply {
-                sorted.take(limit).forEach {
+                sorted.drop(offset).take(limit).forEach {
                     add(JsonObject().apply {
                         addProperty("tag", it.key)
                         addProperty("count", it.value)
@@ -420,6 +516,7 @@ class ZoteroTools @Inject constructor(
         val parentKey = args.strOrNull("item_key")
         val query = args.strOrNull("query")?.lowercase()
         val limit = args.limit("limit", default = 20, max = 50)
+        val offset = args.offset()
         if (parentKey != null) findItem(realm, parentKey)
         val notes = realm.where<RItem>().library(libraryId)
             .equalTo("rawType", ItemTypes.note)
@@ -435,7 +532,7 @@ class ZoteroTools @Inject constructor(
         return JsonObject().apply {
             addProperty("total", notes.size)
             add("notes", JsonArray().apply {
-                notes.take(limit).forEach { (note, text) ->
+                notes.drop(offset).take(limit).forEach { (note, text) ->
                     add(JsonObject().apply {
                         addProperty("key", note.key)
                         add("parentKey", note.parent?.key?.let { com.google.gson.JsonPrimitive(it) } ?: JsonNull.INSTANCE)
@@ -474,6 +571,176 @@ class ZoteroTools @Inject constructor(
                         }
                 }
             })
+        }
+    }
+
+    private suspend fun exportItems(args: JsonObject): JsonObject {
+        val keys = args.strList("item_keys").distinct()
+        val format = args.get("format")?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isString }?.asString
+        if (keys.size !in 1..50) throw ToolError("invalid_argument", "Give 1 to 50 item keys.")
+        if (format != "csl_json" && format != "bibtex") throw ToolError("invalid_argument", "format must be csl_json or bibtex.")
+        read { realm ->
+            keys.forEach { key ->
+                realm.where<RItem>().key(key, libraryId).findFirst()?.takeIf { isRegular(it) }
+                    ?: throw ToolError("not_found", "No item with key $key.")
+            }
+        }
+        // From zotero.org, like every other client, so the text is the same everywhere.
+        val apiKey = defaults.getApiToken() ?: throw ToolError("unavailable", "Not signed in to Zotero.")
+        val url = okhttp3.HttpUrl.Builder().scheme("https").host("api.zotero.org")
+            .addPathSegments("users/${defaults.getUserId()}/items")
+            .addQueryParameter("itemKey", keys.joinToString(","))
+            .addQueryParameter("include", "bibtex,csljson")
+            .addQueryParameter("limit", "50")
+            .build()
+        val found = withContext(dispatchers.io) {
+            try {
+                http.newCall(zoteroRequest(url.toString(), apiKey)).execute().use { response ->
+                    if (!response.isSuccessful) throw ToolError("failed", "Zotero Web API: HTTP ${response.code}")
+                    JsonParser.parseString(response.body.string()).asJsonArray
+                        .map { it.asJsonObject }.associateBy { it.get("key").asString }
+                }
+            } catch (e: java.io.IOException) {
+                throw ToolError("unavailable", "Exporting needs zotero.org, which can't be reached.")
+            }
+        }
+        keys.forEach { if (it !in found) throw ToolError("not_found", "$it hasn't synced to zotero.org yet.") }
+        val text = if (format == "bibtex") {
+            keys.joinToString("\n\n") { found.getValue(it).get("bibtex")?.asString.orEmpty().trim() }
+        } else {
+            val array = JsonArray()
+            keys.forEach { key ->
+                val csl = found.getValue(key).get("csljson")?.takeIf { it.isJsonObject }?.asJsonObject ?: JsonObject()
+                // "id" becomes the item key, keeping its place among the members, or added last
+                // (Python's {**csl, "id": key}, JS's {...csl, id: key}).
+                array.add(JsonObject().apply {
+                    csl.entrySet().forEach { (k, v) -> if (k == "id") addProperty("id", key) else add(k, v) }
+                    if (!csl.has("id")) addProperty("id", key)
+                })
+            }
+            PortableJson.write(array)
+        }
+        return JsonObject().apply {
+            addProperty("format", format)
+            add("keys", stringArray(keys))
+            addProperty("text", text)
+        }
+    }
+
+    // endregion
+
+    // region Semantic search (ai/spec/semantic.md)
+
+    private suspend fun semanticSearch(args: JsonObject): JsonObject {
+        val query = SemanticSearch.normalize(args.get("query")?.takeIf { it.isJsonPrimitive }?.asString.orEmpty())
+        if (query.isEmpty()) throw ToolError("invalid_argument", "query is empty.")
+        val limit = args.limit("limit", default = 10, max = 20)
+        val source = semanticIndexSource()
+        if (!semanticSearch.usableVerified()) {
+            throw ToolError("unavailable", "Semantic search is off on this device. Turn it on in the Zotero AI settings.")
+        }
+        if (source.needsDownload) source.download()
+        val index = try {
+            semanticSearch.index(source.file)
+        } catch (e: SemanticIndex.Unusable) {
+            throw ToolError("unavailable", e.message ?: SemanticIndex.DAMAGED)
+        }
+        val embedding = try {
+            semanticSearch.embed(SemanticSearch.queryText(query))
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            Timber.e(e, "ZoteroTools: semantic search model failed")
+            throw ToolError("unavailable", "The semantic search model couldn't run on this device.")
+        }
+        val rows = index.rank(embedding, 200)
+        return read { realm ->
+            val found = LinkedHashMap<String, Pair<JsonObject, JsonArray>>()
+            val regular = HashMap<String, RItem?>()
+            for ((row, score) in rows) {
+                val chunk = index.chunks[row]
+                val item = regular.getOrPut(chunk.itemKey) {
+                    realm.where<RItem>().key(chunk.itemKey, libraryId).findFirst()?.takeIf { isRegular(it) }
+                } ?: continue
+                val entry = found[item.key] ?: run {
+                    if (found.size == limit) null
+                    else (summary(item).apply { addProperty("score", kotlin.math.floor(score * 1000 + 0.5) / 1000) } to JsonArray())
+                        .also { found[item.key] = it }
+                } ?: continue // full: later rows can only add passages to listed items
+                if (entry.second.size() < 2) entry.second.add(JsonObject().apply {
+                    addProperty("source", chunk.source)
+                    addProperty("key", chunk.key)
+                    addProperty("text", chunk.text.take(800))
+                })
+            }
+            JsonObject().apply {
+                add("index", JsonObject().apply {
+                    addProperty("builtAt", index.builtAt)
+                    addProperty("items", index.items)
+                    addProperty("chunks", index.count)
+                })
+                add("items", JsonArray().apply {
+                    found.values.forEach { (summary, passages) -> add(summary.apply { add("passages", passages) }) }
+                })
+            }
+        }
+    }
+
+    private class IndexSource(val file: java.io.File, val source: String, val needsDownload: Boolean, val download: suspend () -> Unit)
+
+    /**
+     * Where the index comes from: the conformance override, else the library's index attachment
+     * (a stored file, most recently modified, not trashed, no parent, tagged `_zotero-ai-index`), downloaded the way
+     * the app downloads attachments when it isn't on this device or has changed.
+     */
+    private suspend fun semanticIndexSource(): IndexSource {
+        semanticSearch.overrideIndex?.let { return IndexSource(it, "override", needsDownload = false) {} }
+        val (attachment, local) = read { realm ->
+            val item = realm.where<RItem>().library(libraryId)
+                .equalTo("rawType", ItemTypes.attachment)
+                .equalTo("trash", false)
+                .equalTo("deleted", false)
+                .isNull("parent")
+                .findAll()
+                .filter { item -> item.tags?.any { it.tag?.name == SEMANTIC_INDEX_TAG } == true }
+                // Stored files only; a linked file doesn't sync (desktop and the server pick the same way).
+                .filter { item -> item.fields.firstOrNull { it.key == FieldKeys.Item.Attachment.linkMode }?.value == LinkMode.importedFile.str }
+                .sortedBy { it.key } // ties: the lowest key (semantic.md)
+                .maxByOrNull { it.dateModified }
+                ?: throw ToolError("unavailable", "There's no search index yet. Turn on semantic search in the Zotero desktop plugin to build one.")
+            val attachment = AttachmentCreator.attachment(item, fileStorage = fileStore, isForceRemote = false, urlDetector = null, defaults = defaults)
+            val kind = attachment?.type as? Attachment.Kind.file
+            if (kind == null) throw ToolError("unavailable", SemanticIndex.DAMAGED)
+            attachment to (kind.location == Attachment.FileLocation.local)
+        }
+        val kind = attachment.type as Attachment.Kind.file
+        val file = fileStore.attachmentFile(libraryId = attachment.libraryId, key = attachment.key, filename = kind.filename)
+        return IndexSource(file, "attachment", needsDownload = !local || !file.exists()) {
+            val inTime = download(attachment, null, TimeUnit.SECONDS.toMillis(60))
+            if (!file.exists()) {
+                throw ToolError("unavailable", if (!inTime) "Downloading the search index took too long." else "Couldn't download the search index.")
+            }
+        }
+    }
+
+    /** The index zotero_semantic_search would use, if it's on this device (the test hook's status). */
+    suspend fun semanticIndexStatus(): JsonObject? {
+        val source = try {
+            semanticIndexSource()
+        } catch (e: ToolError) {
+            return null
+        }
+        if (source.needsDownload) return null
+        val index = try {
+            semanticSearch.index(source.file)
+        } catch (e: SemanticIndex.Unusable) {
+            return null
+        }
+        return JsonObject().apply {
+            addProperty("builtAt", index.builtAt)
+            addProperty("items", index.items)
+            addProperty("chunks", index.count)
+            addProperty("source", source.source)
         }
     }
 
@@ -640,6 +907,10 @@ class ZoteroTools @Inject constructor(
 
     // region Helpers
 
+    private companion object {
+        const val SEMANTIC_INDEX_TAG = "_zotero-ai-index"
+    }
+
     private val titleOrder = compareBy<RItem>({ title(it).lowercase() }, { it.key })
 
     private suspend inline fun <reified T : Any> read(crossinline block: (Realm) -> T): T = withContext(dispatchers.io) {
@@ -789,10 +1060,68 @@ class ZoteroTools @Inject constructor(
             ?.mapNotNull { it.takeIf(JsonElement::isJsonPrimitive)?.asString }
             .orEmpty()
 
+    private fun JsonObject.intOrNull(name: String): Int? =
+        get(name)?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isNumber }?.asDouble
+            ?.takeIf { it.isFinite() }?.toLong()?.coerceIn(Int.MIN_VALUE.toLong(), Int.MAX_VALUE.toLong())?.toInt()
+
+    private fun JsonObject.offset(): Int = (intOrNull("offset") ?: 0).coerceAtLeast(0)
+
     private fun JsonObject.limit(name: String, default: Int, max: Int): Int {
         val value = get(name)?.takeIf { it.isJsonPrimitive }?.asInt ?: return default
         return value.coerceIn(1, max)
     }
 
     // endregion
+}
+
+/**
+ * Compact JSON exactly as Python's `json.dumps(ensure_ascii=False, separators=(",", ":"))` and JS's
+ * `JSON.stringify` write it, so exports are the same text on every host. Gson can't: it always
+ * escapes U+2028 and U+2029, which the others write as is.
+ */
+internal object PortableJson {
+    fun write(element: JsonElement): String = StringBuilder().also { write(element, it) }.toString()
+
+    private fun write(element: JsonElement, out: StringBuilder) {
+        when {
+            element.isJsonNull -> out.append("null")
+            element.isJsonArray -> {
+                out.append('[')
+                element.asJsonArray.forEachIndexed { i, e ->
+                    if (i > 0) out.append(',')
+                    write(e, out)
+                }
+                out.append(']')
+            }
+            element.isJsonObject -> {
+                out.append('{')
+                element.asJsonObject.entrySet().forEachIndexed { i, (k, v) ->
+                    if (i > 0) out.append(',')
+                    string(k, out)
+                    out.append(':')
+                    write(v, out)
+                }
+                out.append('}')
+            }
+            element.asJsonPrimitive.isString -> string(element.asString, out)
+            else -> out.append(element.asJsonPrimitive.toString())
+        }
+    }
+
+    private fun string(s: String, out: StringBuilder) {
+        out.append('"')
+        for (c in s) {
+            when (c) {
+                '"' -> out.append("\\\"")
+                '\\' -> out.append("\\\\")
+                '\n' -> out.append("\\n")
+                '\r' -> out.append("\\r")
+                '\t' -> out.append("\\t")
+                '\b' -> out.append("\\b")
+                '\u000C' -> out.append("\\f")
+                else -> if (c < ' ') out.append("\\u%04x".format(c.code)) else out.append(c)
+            }
+        }
+        out.append('"')
+    }
 }

@@ -20,7 +20,8 @@ def canonical_json(value):
 class Approvals:
     def __init__(self, spec, library, clients, is_enabled):
         self.spec, self.library, self.clients, self.is_enabled = spec, library, clients, is_enabled
-        self.timing = {"expireMs": 5 * 60 * 1000, "keepMs": 10 * 60 * 1000, "replayMs": 2 * 60 * 1000}
+        self.timing = {"expireMs": 5 * 60 * 1000, "keepMs": 10 * 60 * 1000, "replayMs": 2 * 60 * 1000,
+                       "holdMs": 20 * 1000}  # holdMs: longest a tool call waits before returning pending_approval
         self.ops = {}
         self.lock = threading.RLock()
         self.changed = threading.Condition(self.lock)
@@ -69,6 +70,9 @@ class Approvals:
         # The description may need a sync; work it out first, then check and insert in one step.
         description = self.spec.describe_write(self.library, name, json.loads(args_json))
         with self.lock:
+            current = self.clients.get(client["id"])
+            if not current or current["scope"] != "write" or not self.is_enabled():
+                return None, DECLINED
             self._prune()
             now = time.time()
             for op in self.ops.values():
@@ -86,7 +90,7 @@ class Approvals:
                   "expiresAt": now + self.timing["expireMs"] / 1000, "completedAt": None, "result": None}
             self.ops[op["id"]] = op
             self.changed.notify_all()
-            run = not self.spec.should_ask(name, client.get("autoApprove", False)) and self._start(op)
+            run = not self.spec.should_ask(name, current.get("autoApprove", False)) and self._start(op)
         if run:
             threading.Thread(target=self._run, args=(op,), daemon=True).start()
         return op, None
