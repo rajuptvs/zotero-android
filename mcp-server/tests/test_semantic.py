@@ -560,6 +560,44 @@ class WebDavIndex(unittest.TestCase):
             httpd.shutdown()
             shutil.rmtree(d, ignore_errors=True)
 
+    def test_refused_login_pauses_webdav(self):
+        """After a 401 (or 429), Files leaves the WebDAV server alone instead of retrying a wrong password."""
+        hits = []
+
+        class Refuse(BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_GET(self):
+                hits.append(self.path)
+                self.send_response(self.server.status)
+                self.send_header("Content-Length", "0")
+                if self.server.status == 429:
+                    self.send_header("Retry-After", "120")
+                self.end_headers()
+
+        for status, wait in ((401, pdf.WEBDAV_PAUSE_SECONDS[401]), (429, 120)):
+            with self.subTest(status=status):
+                hits.clear()
+                httpd = ThreadingHTTPServer(("127.0.0.1", 0), Refuse)
+                httpd.status = status
+                threading.Thread(target=httpd.serve_forever, daemon=True).start()
+                d = tempfile.mkdtemp(prefix="zai-sem-")
+                try:
+                    files = pdf.Files(None, d, {"url": f"http://127.0.0.1:{httpd.server_address[1]}", "username": "u", "password": "p"})
+                    for _ in range(3):
+                        with self.assertRaises(pdf.PdfError):
+                            files.path({"key": "PDF00001", "filename": "a.pdf"})
+                    self.assertEqual(len(hits), 1)  # only the first call reached the server
+                    self.assertAlmostEqual(files.webdav_paused[0] - time.time(), wait, delta=5)
+                    files.webdav_paused = (0, None)  # the pause is over
+                    with self.assertRaises(pdf.PdfError):
+                        files.path({"key": "PDF00001", "filename": "a.pdf"})
+                    self.assertEqual(len(hits), 2)
+                finally:
+                    httpd.shutdown()
+                    shutil.rmtree(d, ignore_errors=True)
+
 
 if __name__ == "__main__":
     unittest.main()

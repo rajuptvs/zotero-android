@@ -24,6 +24,9 @@ MAX_FILE_BYTES = 200 * 1024 * 1024  # largest PDF this server downloads
 MAX_RESOURCE_BYTES = 25 * 1024 * 1024  # zotero_get_pdf_file
 CACHE_BYTES = 1024 * 1024 * 1024
 MAX_SIDE = 2000
+# After the WebDAV server refuses the login or says to slow down, leave it alone this long: retrying
+# a wrong password gets the whole computer rate-limited.
+WEBDAV_PAUSE_SECONDS = {401: 10 * 60, 403: 10 * 60, 429: 15 * 60}
 JPEG_QUALITY = 85
 
 _render_lock = threading.Lock()  # PDFium isn't thread-safe
@@ -170,6 +173,7 @@ class Files:
         self.locks = {}
         self.locks_lock = threading.Lock()
         self.cache_lock = threading.Lock()  # writing and pruning the cache
+        self.webdav_paused = (0, None)  # (until, HTTP status) after a refused login or a rate limit
 
     @staticmethod
     def webdav_base(url):
@@ -190,6 +194,11 @@ class Files:
             raise PdfError("unavailable", f"This {label} is a linked file, which only the computer that has it can open.")
         key = attachment["key"]
         filename = attachment.get("filename") or "file" + ext
+        if self.webdav:
+            until, status = self.webdav_paused
+            if time.time() < until:
+                minutes = max(1, round((until - time.time()) / 60))
+                raise PdfError("unavailable", self._webdav_refusal(status) + f" Zotero AI will try it again in {minutes} min.")
         with self._lock(key):
             try:
                 if self.webdav:
@@ -213,6 +222,13 @@ class Files:
                 os.utime(path)  # recently used: kept by _prune
                 return path, filename
             except urllib.error.HTTPError as e:
+                if self.webdav and e.code in WEBDAV_PAUSE_SECONDS:
+                    pause = WEBDAV_PAUSE_SECONDS[e.code]
+                    retry_after = (e.headers or {}).get("Retry-After", "")
+                    if e.code == 429 and retry_after.isdigit():
+                        pause = min(max(int(retry_after), 60), 3600)
+                    self.webdav_paused = (time.time() + pause, e.code)
+                    raise PdfError("unavailable", self._webdav_refusal(e.code))
                 if e.code == 404:
                     raise PdfError("unavailable", "The file isn't on the " + ("WebDAV server." if self.webdav else "Zotero storage server."))
                 raise PdfError("unavailable", f"Couldn't download the file (HTTP {e.code}).")
@@ -221,6 +237,12 @@ class Files:
                 raise PdfError("unavailable", f"Couldn't download the file: {getattr(e, 'reason', None) or e.__class__.__name__}")
             except OSError:
                 raise PdfError("unavailable", "Couldn't download or store the file on the server.")
+
+    @staticmethod
+    def _webdav_refusal(status):
+        if status == 429:
+            return "The WebDAV server is limiting requests from this server (HTTP 429)."
+        return f"The WebDAV server refused the login (HTTP {status}); check --webdav-username and the password file."
 
     def _tmp_dir(self):
         os.makedirs(self.cache_dir, mode=0o700, exist_ok=True)

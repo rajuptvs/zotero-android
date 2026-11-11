@@ -39,6 +39,9 @@ settings, with the password in a file only you can read:
 python3 -m zotero_ai_mcp serve --api-key-file ~/.config/zotero-api-key \
   --webdav-url https://dav.example.com/dav --webdav-username me --webdav-password-file ~/.config/zotero-webdav-password
 ```
+If the WebDAV server refuses the login (HTTP 401/403) the server leaves it alone for 10 minutes,
+and after HTTP 429 for as long as it asks (15 minutes if it doesn't say), so a wrong password can't
+get this computer rate-limited; restart the server after fixing the password.
 Without WebDAV options, files come from Zotero storage. Downloaded PDFs are cached in the data
 directory (up to 1 GB).
 
