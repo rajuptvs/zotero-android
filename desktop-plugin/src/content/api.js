@@ -35,6 +35,14 @@ ZoteroAI.API = {
 		};
 	},
 
+	/** function_call_output content for a result that comes with images (chat.md). */
+	outputWithImages(text, images) {
+		return [
+			{ type: "input_text", text },
+			...images.map((image) => ({ type: "input_image", image_url: `data:${image.mimeType};base64,${image.data}` })),
+		];
+	},
+
 	/**
 	 * One streamed request. `onEvent` gets {type:"phase", phase:"thinking"|"writing"},
 	 * {type:"text", delta} and {type:"item", item} (each finished output item). Resolves after

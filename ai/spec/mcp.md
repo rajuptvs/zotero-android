@@ -31,7 +31,7 @@ approval UI. `ai/conformance/run.py` checks a host against part A (`class Mcp`, 
 - The catalog is derived from `tools.json` (conformance recomputes it):
   `{name, description, inputSchema, annotations: {readOnlyHint: !x-write, destructiveHint: x-always-ask}}`,
   where `inputSchema` is `parameters` with nullable properties removed from `required`.
-- `read` clients get tools without `x-write` / `x-mcp-only`; `write` clients get all of them,
+- `read` clients get tools without `x-write` / `x-write-scope`; `write` clients get all of them,
   including `zotero_await_approval`. A `read` client calling a write tool or
   `zotero_await_approval` gets `{"error":"declined","message":"This connection is read-only."}` and
   nothing is queued.
@@ -39,6 +39,9 @@ approval UI. `ai/conformance/run.py` checks a host against part A (`class Mcp`, 
   An unknown tool name is a JSON-RPC `-32602`; everything else is a tool result.
 - Tool result: `{content: [{type: "text", text: JSON.stringify(result)}], isError: "error" in result}`,
   where `result` is exactly what `tools.md` specifies (equal to the chat clients' results).
+- A page image adds `{type: "image", data: <base64>, mimeType: "image/jpeg"}` after the text part;
+  the PDF file adds `{type: "resource", resource: {uri: "zotero://attachment/<attachmentKey>",
+  mimeType: "application/pdf", blob: <base64>}}`.
 
 ### Writes and approvals
 - Whether a write asks is `shouldAsk(tool, client.autoApprove)` (`tools.md`); trash always asks.

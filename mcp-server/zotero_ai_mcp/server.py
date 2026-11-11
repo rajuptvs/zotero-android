@@ -2,6 +2,7 @@
 Zotero Web API, so agents can use the library with Zotero closed. Changes wait for approval on the
 server's own page (/admin), protected by an admin password that agents never have.
 """
+import base64
 import hashlib
 import re
 import hmac
@@ -271,9 +272,11 @@ class Server:
             return {"error": {"code": -32602, "message": f"Unknown tool {name}"}}
         # Same bytes as JSON.stringify on the desktop (which writes a lone surrogate as \udXXX).
         stringify = lambda value: LONE_SURROGATE.sub(lambda m: "\\u%04x" % ord(m.group()), json.dumps(value, ensure_ascii=False, separators=(",", ":")))
-        result = lambda value: {"result": {"content": [{"type": "text", "text": stringify(value)}],
-                                           "isError": isinstance(value, dict) and "error" in value}}
-        if (tool.get("x-write") or tool.get("x-mcp-only")) and client["scope"] != "write":
+        def result(value):
+            extra = value.pop("_content", []) if isinstance(value, dict) else []
+            return {"result": {"content": [{"type": "text", "text": stringify(value)}, *extra],
+                               "isError": isinstance(value, dict) and "error" in value}}
+        if (tool.get("x-write") or tool.get("x-write-scope")) and client["scope"] != "write":
             return result(READ_ONLY)
         if name == "zotero_await_approval":
             checked = self.spec.validate_args(name, args)
@@ -376,6 +379,14 @@ class Server:
         if self.test_hooks and path == "/admin/api/timing":
             self.approvals.timing.update({k: v for k, v in body.items() if k in self.approvals.timing})
             return self.send(h, 200, self.approvals.timing)
+        if self.test_hooks and path == "/admin/api/render":
+            # Renders a PDF sent by the conformance suite (same code as zotero_get_page_image).
+            from . import pdf
+            try:
+                count, width, height, jpeg = pdf.render(base64.b64decode(body.get("pdf", "")), body.get("page"), body.get("region"), body.get("max_width"))
+            except pdf.PdfError as e:
+                return self.send(h, 200, {"result": {"error": e.code, "message": str(e)}})
+            return self.send(h, 200, {"result": {"pageCount": count, "width": width, "height": height}, "image": base64.b64encode(jpeg).decode("ascii")})
         if self.test_hooks and path == "/admin/api/restart":
             self.approvals.decline_all()
             return self.send(h, 200, {"ok": True})

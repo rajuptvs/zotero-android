@@ -157,22 +157,37 @@ class McpRemote @Inject constructor(
         return "Run ${entry.toolName} on ${entry.server.name}: $json"
     }
 
-    /** Calls the tool and returns the function_call_output string. */
-    suspend fun call(entry: Entry, args: JsonObject): String = withContext(Dispatchers.IO) {
+    /** An image from a tool result, passed to the model with the result text. */
+    data class Image(val mimeType: String, val data: String)
+
+    class CallResult(val output: String, val images: List<Image>)
+
+    /** Calls the tool → the result text plus the images to pass to the model (mcp-client.md, "Results"). */
+    suspend fun call(entry: Entry, args: JsonObject): CallResult = withContext(Dispatchers.IO) {
         val result = runCatching {
             entry.client.request("tools/call", JsonObject().apply {
                 addProperty("name", entry.toolName)
                 add("arguments", args)
             }, callHttp)
         }.getOrElse {
-            return@withContext output(true, "${entry.server.name} couldn't be reached: ${it.message ?: it}")
+            return@withContext CallResult(output(true, "${entry.server.name} couldn't be reached: ${it.message ?: it}"), emptyList())
         }
+        val images = mutableListOf<Image>()
         val text = result.get("content")?.takeIf { it.isJsonArray }?.asJsonArray?.joinToString("\n") { part ->
             val o = part.takeIf { it.isJsonObject }?.asJsonObject
-            if (o?.get("type")?.asString == "text") o.get("text")?.asString.orEmpty()
-            else "[${o?.get("type")?.asString ?: "content"} omitted]"
+            val type = o?.string("type")
+            val mimeType = o?.string("mimeType")
+            val data = o?.string("data")
+            when {
+                type == "text" -> o.string("text").orEmpty()
+                type == "image" && mimeType in IMAGE_TYPES && data != null && data.length <= MAX_IMAGE_CHARS && data.length % 4 == 0 && BASE64.matches(data) && data.startsWith(IMAGE_PREFIXES.getValue(mimeType!!)) && images.size < MAX_IMAGES -> {
+                    images += Image(mimeType!!, data)
+                    "[image ${images.size}]"
+                }
+                else -> "[${type?.ifEmpty { null } ?: "content"} omitted]"
+            }
         }.orEmpty()
-        output(result.get("isError")?.let { it.isJsonPrimitive && it.asJsonPrimitive.isBoolean && it.asBoolean } == true, text.take(20000))
+        CallResult(output(result.get("isError")?.let { it.isJsonPrimitive && it.asJsonPrimitive.isBoolean && it.asBoolean } == true, text.take(20000)), images)
     }
 
     private fun output(isError: Boolean, text: String): String = gson.toJson(JsonObject().apply {
@@ -287,6 +302,12 @@ class McpRemote @Inject constructor(
         private const val CALL_SECONDS = 60L
         private const val MAX_SCHEMA_CHARS = 8000
         private const val MAX_RESPONSE_BYTES = 5L * 1024 * 1024
+        // How each type's base64 starts (its file signature), so the data is at least that kind of image.
+        private val IMAGE_PREFIXES = mapOf("image/png" to "iVBORw0KGgo", "image/jpeg" to "/9j/", "image/gif" to "R0lGOD", "image/webp" to "UklGR")
+        private val IMAGE_TYPES = IMAGE_PREFIXES.keys
+        private const val MAX_IMAGE_CHARS = 4_000_000
+        private const val MAX_IMAGES = 4
+        private val BASE64 = Regex("^[A-Za-z0-9+/]*={0,2}$") // plus a length that's a multiple of 4
     }
 }
 

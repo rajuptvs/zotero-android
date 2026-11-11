@@ -155,6 +155,20 @@ class ChatGptResponsesClient @Inject constructor(
 
     fun developerItem(text: String): JsonObject = textMessage(role = "developer", text = text)
 
+    /** function_call_output content for a result that comes with images (chat.md). */
+    fun outputWithImages(text: String, images: List<org.zotero.android.ai.mcp.McpRemote.Image>): JsonArray = JsonArray().apply {
+        add(JsonObject().apply {
+            addProperty("type", "input_text")
+            addProperty("text", text)
+        })
+        images.forEach { image ->
+            add(JsonObject().apply {
+                addProperty("type", "input_image")
+                addProperty("image_url", "data:${image.mimeType};base64,${image.data}")
+            })
+        }
+    }
+
     /**
      * One model request with a raw `input` array (so callers can include function calls and their
      * outputs) and optional function tools.

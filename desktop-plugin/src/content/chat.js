@@ -28,6 +28,8 @@ ZoteroAI.TOOL_LABELS = {
 	zotero_get_recent: "Checking recent additions",
 	zotero_get_notes: "Reading notes",
 	zotero_get_annotations: "Reading annotations",
+	zotero_get_pdf_info: "Opening a PDF",
+	zotero_get_page_image: "Looking at a page",
 	zotero_batch_update_tags: "Updating tags",
 	zotero_set_item_collections: "Updating collections",
 	zotero_create_collection: "Creating a collection",
@@ -39,6 +41,8 @@ ZoteroAI.TOOL_LABELS = {
 ZoteroAI.ChatSession = class {
 	static MAX_DOCUMENT_CHARS = 200000;
 	static MAX_TOOL_ROUNDS = 12;
+	static MAX_TURN_IMAGES = 10;
+	static TOO_MANY_IMAGES = Object.freeze({ error: "unavailable", message: "That's the most images one answer can use; answer with the ones you have." });
 	static all = new Set();
 
 	/**
@@ -357,6 +361,7 @@ ZoteroAI.ChatSession = class {
 		let instructions = this.state.isLibrary ? ZoteroAI.Spec.prompts.library : ZoteroAI.Spec.prompts.reader;
 		let trace = [], activity = remote.unavailable.map((name) => `${name} isn't available`);
 		let answer = "";
+		let imagesSent = 0;
 		for (let round = 0; ; round++) {
 			if (abort.cancelled) return null;
 			let calls = [];
@@ -401,12 +406,13 @@ ZoteroAI.ChatSession = class {
 				this.set({ phase: { tool: label } });
 				let result;
 				let output = null; // set directly for MCP-client calls
+				let images = []; // {mimeType, data} sent with the result, this turn only (chat.md)
 				let entry = remote.index.get(call.name);
 				if (entry) {
 					let description = ZoteroAI.McpRemote.describe(entry, args);
 					this.set({ phase: { tool: `${entry.tool.name} on ${entry.server.name}` } });
 					if (!ZoteroAI.McpRemote.shouldAsk(entry, mcpSeen) || await this._askApproval(call.name, description)) {
-						output = await ZoteroAI.McpRemote.call(entry, args);
+						({ output, images } = await ZoteroAI.McpRemote.call(entry, args));
 						tainted = true;
 						mcpSeen = true;
 						activity.push(`${entry.tool.name} on ${entry.server.name}` + (JSON.parse(output).isError ? " (failed)" : ""));
@@ -432,14 +438,23 @@ ZoteroAI.ChatSession = class {
 					else activity.push("Declined: " + run.description);
 				}
 				else {
-					result = await ZoteroAI.Tools.execute(call.name, args);
+					let { _content = [], ...value } = await ZoteroAI.Tools.execute(call.name, args);
+					result = value;
+					images = _content.filter((part) => part.type == "image");
 					activity.push(label + (result.error ? " (failed)" : ""));
 				}
 				if (abort.cancelled) return null;
+				// A cap on images per answer keeps requests a reasonable size (chat.md).
+				if (imagesSent + images.length > ZoteroAI.ChatSession.MAX_TURN_IMAGES) {
+					if (!entry) result = ZoteroAI.ChatSession.TOO_MANY_IMAGES;
+					images = [];
+				}
+				imagesSent += images.length;
 				this.set({ liveActivity: [...activity] });
 				let outputItem = { type: "function_call_output", call_id: call.call_id, output: output ?? JSON.stringify(result) };
-				input.push(outputItem);
+				// Later turns get the result without its images (trace).
 				trace.push(outputItem);
+				input.push(images.length ? { ...outputItem, output: ZoteroAI.API.outputWithImages(outputItem.output, images) } : outputItem);
 			}
 			if (abort.cancelled) return null;
 			this.set({ phase: "thinking" });

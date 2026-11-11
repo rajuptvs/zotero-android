@@ -39,7 +39,7 @@ ZoteroAI.Spec = {
 	 */
 	mcpTools(scope) {
 		return this.tools
-			.filter((t) => scope == "write" || (!t["x-write"] && !t["x-mcp-only"]))
+			.filter((t) => scope == "write" || (!t["x-write"] && !t["x-write-scope"]))
 			.map((t) => {
 				let schema = JSON.parse(JSON.stringify(t.parameters || { type: "object", properties: {} }));
 				let props = schema.properties || {};

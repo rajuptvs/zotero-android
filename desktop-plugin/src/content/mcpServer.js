@@ -154,10 +154,11 @@ ZoteroAI.McpServer = {
 		let args = params.arguments ?? {};
 		let tool = ZoteroAI.Spec.tool(name);
 		if (!tool) return { error: { code: -32602, message: `Unknown tool ${name}` } };
-		let toolResult = (value) => ({
-			result: { content: [{ type: "text", text: JSON.stringify(value) }], isError: !!(value && "error" in value) },
+		// A page image or PDF comes as extra content parts (_content) after the JSON result.
+		let toolResult = ({ _content = [], ...value }) => ({
+			result: { content: [{ type: "text", text: JSON.stringify(value) }, ..._content], isError: "error" in value },
 		});
-		let writes = tool["x-write"] === true || tool["x-mcp-only"] === true;
+		let writes = tool["x-write"] === true || tool["x-write-scope"] === true;
 		if (writes && client.scope != "write") return toolResult(this.READ_ONLY);
 
 		if (name == "zotero_await_approval") {

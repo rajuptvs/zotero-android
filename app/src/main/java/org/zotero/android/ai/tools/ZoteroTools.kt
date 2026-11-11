@@ -18,6 +18,11 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.zotero.android.ai.chat.ChatMarkdown
 import org.zotero.android.architecture.Defaults
+import org.zotero.android.attachmentdownloader.AttachmentDownloader
+import org.zotero.android.attachmentdownloader.AttachmentDownloaderEventStream
+import org.zotero.android.database.objects.Attachment
+import org.zotero.android.files.FileStore
+import org.zotero.android.sync.AttachmentCreator
 import org.zotero.android.architecture.coroutines.Dispatchers
 import org.zotero.android.database.DbRequest
 import org.zotero.android.database.DbResponseRequest
@@ -68,6 +73,9 @@ class ZoteroTools @Inject constructor(
     private val identifierLookupController: IdentifierLookupController,
     private val translatorLoadedEventStream: TranslatorLoadedEventStream,
     private val dispatchers: Dispatchers,
+    private val fileStore: FileStore,
+    private val attachmentDownloader: AttachmentDownloader,
+    private val attachmentDownloaderEventStream: AttachmentDownloaderEventStream,
 ) {
     private val libraryId: LibraryIdentifier = LibraryIdentifier.custom(RCustomLibraryType.myLibrary)
     private val http = OkHttpClient.Builder().callTimeout(30, TimeUnit.SECONDS).build()
@@ -84,6 +92,8 @@ class ZoteroTools @Inject constructor(
             "zotero_get_recent" -> read { getRecent(it, args) }
             "zotero_get_notes" -> read { getNotes(it, args) }
             "zotero_get_annotations" -> read { getAnnotations(it, args.str("item_key")) }
+            "zotero_get_pdf_info" -> getPdfInfo(args)
+            "zotero_get_page_image" -> getPageImage(args)
             "zotero_batch_update_tags" -> batchUpdateTags(args)
             "zotero_set_item_collections" -> setItemCollections(args)
             "zotero_create_collection" -> createCollection(args)
@@ -259,6 +269,84 @@ class ZoteroTools @Inject constructor(
             addProperty("truncated", text.length > maxChars)
             addProperty("text", text.take(maxChars))
         }
+    }
+
+    private suspend fun getPdfInfo(args: JsonObject): JsonObject {
+        val (attachmentKey, file) = pdfFile(args.str("item_key"))
+        val count = withContext(dispatchers.io) { PdfPages.pageCount(file) }
+        return JsonObject().apply {
+            addProperty("attachmentKey", attachmentKey)
+            addProperty("pageCount", count)
+        }
+    }
+
+    /** The image travels beside the result, as MCP content parts under _content (mcp.md, chat.md). */
+    private suspend fun getPageImage(args: JsonObject): JsonObject {
+        val page = args.get("page")?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isNumber }?.asDouble
+            ?.takeIf { it == kotlin.math.floor(it) && it in Int.MIN_VALUE.toDouble()..Int.MAX_VALUE.toDouble() }?.toInt()
+            ?: throw ToolError("invalid_argument", "page must be integer.")
+        val (attachmentKey, file) = pdfFile(args.str("item_key"))
+        val image = withContext(dispatchers.io) { PdfPages.render(file, page, args.get("region"), args.get("max_width")) }
+        return JsonObject().apply {
+            addProperty("attachmentKey", attachmentKey)
+            addProperty("page", page)
+            addProperty("pageCount", image.pageCount)
+            addProperty("width", image.width)
+            addProperty("height", image.height)
+            addProperty("mimeType", "image/jpeg")
+            add("_content", JsonArray().apply {
+                add(JsonObject().apply {
+                    addProperty("type", "image")
+                    addProperty("data", android.util.Base64.encodeToString(image.jpeg, android.util.Base64.NO_WRAP))
+                    addProperty("mimeType", "image/jpeg")
+                })
+            })
+        }
+    }
+
+    /**
+     * The item's PDF (the key itself, else its first PDF attachment in title order) as a local
+     * file, downloaded first the way the app opens attachments (Zotero storage or WebDAV).
+     */
+    private suspend fun pdfFile(itemKey: String): Pair<String, java.io.File> {
+        val (attachment, parentKey) = read { realm ->
+            val item = findItem(realm, itemKey)
+            val candidates = if (item.rawType == ItemTypes.attachment) listOf(item) else {
+                item.children?.filter { it.rawType == ItemTypes.attachment && !it.trash && !it.deleted }.orEmpty()
+            }
+            val pdf = candidates.filter { field(it, FieldKeys.Item.Attachment.contentType) == "application/pdf" }
+                .sortedWith(titleOrder).firstOrNull()
+                ?: throw ToolError("not_found", "This item has no PDF.")
+            val attachment = AttachmentCreator.attachment(pdf, fileStorage = fileStore, isForceRemote = false, urlDetector = null, defaults = defaults)
+                ?: throw ToolError("unavailable", "This PDF can't be opened on this device.")
+            attachment to pdf.parent?.key
+        }
+        val kind = attachment.type as? Attachment.Kind.file
+            ?: throw ToolError("unavailable", "This PDF can't be opened on this device.")
+        if (kind.linkType == Attachment.FileLinkType.linkedFile || kind.linkType == Attachment.FileLinkType.embeddedImage) {
+            throw ToolError("unavailable", "This PDF is a linked file, which this device can't open.")
+        }
+        val file = fileStore.attachmentFile(libraryId = attachment.libraryId, key = attachment.key, filename = kind.filename)
+        if (kind.location != Attachment.FileLocation.local || !file.exists()) {
+            val update = coroutineScope {
+                // Subscribe before asking, so the result can't be missed.
+                val waiter = async(start = kotlinx.coroutines.CoroutineStart.UNDISPATCHED) {
+                    withTimeoutOrNull(TimeUnit.MINUTES.toMillis(3)) {
+                        attachmentDownloaderEventStream.flow().first { update ->
+                            update.key == attachment.key && update.libraryId == attachment.libraryId &&
+                                    update.kind !is AttachmentDownloader.Update.Kind.progress
+                        }
+                    }
+                }
+                attachmentDownloader.downloadIfNeeded(attachment, parentKey)
+                waiter.await()
+            }
+            // A failure or cancellation from another download of the same file still counts if the file arrived.
+            if (!file.exists()) {
+                throw ToolError("unavailable", if (update == null) "Downloading this PDF took too long." else "Couldn't download this PDF.")
+            }
+        }
+        return attachment.key to file
     }
 
     private fun getCollections(realm: Realm): JsonObject {

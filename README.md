@@ -52,10 +52,16 @@ Everything else is the stock Zotero app. Work happens on the [`ai-chat-panel`](h
 ## Ask AI about your library
 
 The ✨ button on the library screen opens the same panel for the whole library. The model gets
-the current collection and your selected items, and can use 15 Zotero tools: search, item details,
-full text, collections, tags, recent items, notes and annotations; and, **only after you approve
-each change**, add or remove tags, file items into collections, create collections and notes, add
-an item by DOI/ISBN/arXiv ID, or move items to the trash.
+the current collection and your selected items, and can use 17 Zotero tools: search, item details,
+full text, collections, tags, recent items, notes, annotations, and **pages of any PDF as images**;
+and, **only after you approve each change**, add or remove tags, file items into collections,
+create collections and notes, add an item by DOI/ISBN/arXiv ID, or move items to the trash.
+
+- **Figures and tables from any paper.** The model can look at a page of a PDF in your library, or
+  zoom into part of one, so it can read a chart, a table or an equation that the extracted text
+  loses ("What does Figure 3 of the BERT paper show?"). If the PDF isn't on the device yet, it's
+  downloaded the way Zotero normally does, from Zotero storage or your WebDAV server. Images are
+  sent with that answer only, not stored in the conversation note.
 
 - Each change shows an **Allow this change?** card with exactly what will happen (*Add tag to-read on “BERT: …”*). Decline, and the model is told so and nothing changes. "Approve changes automatically" in the menu skips the card, except for moving items to the trash, which always asks.
 - The panel shows which tools ran under each answer (*Searching your library*, *✓ Add tag …*).
@@ -98,8 +104,9 @@ You don't need the chat panel or a ChatGPT account for this.
    export ZOTERO_AI_MCP_TOKEN=zai_…
    codex mcp add zotero --url http://127.0.0.1:23119/zotero-ai/mcp --bearer-token-env-var ZOTERO_AI_MCP_TOKEN
    ```
-3. Ask the agent about your library. It gets the same 15 tools as the chat panels, with the same
-   results.
+3. Ask the agent about your library. It gets the same 17 tools as the chat panels, with the same
+   results (page images arrive as MCP image content), plus `zotero_get_pdf_file`, which hands the
+   agent the PDF itself (up to 25 MB).
 
 **Changes always come back to you.** When an agent asks to tag, file, create, add or trash
 something, Zotero shows a card with exactly what will change; nothing happens until you approve.
@@ -115,7 +122,9 @@ The protocol and guarantees are in [`ai/spec/mcp.md`](ai/spec/mcp.md).
 **With Zotero closed:** [`mcp-server/`](mcp-server) is a small standalone server (Python, no
 dependencies) that serves the same tools from the Zotero Web API, on this computer or a home server.
 Changes wait for your approval on its password-protected `/admin` page, which also works from a
-phone browser if you reach the server over HTTPS. The same conformance checks run against it.
+phone browser if you reach the server over HTTPS. For PDFs it reads files from Zotero storage or
+your WebDAV server, and draws pages with `pypdfium2` and `Pillow` if they're installed. The same
+conformance checks run against it.
 
 ### Your MCP servers in the chat panels
 
@@ -184,7 +193,7 @@ No PSPDFKit key is needed: PDFs, EPUBs and snapshots all open in Zotero's web-ba
 
 ## Known limitations
 
-- Images you send aren't stored in the synced note; they appear there as `[Image: …]`.
+- Images you send aren't stored in the synced note; they appear there as `[Image: …]`. Page images the model looks at are used for that answer only; a later question asks for the page again.
 - Math is typeset with [KaTeX](https://katex.org) in the panel on both platforms, as soon as each formula is complete while the answer streams, and in notes saved with **Save as note** (as Zotero note math). Full conversation notes keep the TeX source.
 - Conversation notes store one paragraph per line, so very elaborate formatting (nested lists, indented code) can come back simplified when a chat is reopened.
 - The library tools work on **My Library** only, on both platforms; group libraries aren't supported yet. While you're looking at a group library, the library assistant knows that and works on My Library. A reader chat about a paper in a group library is saved as a note on that paper, so the group's members can see it.
@@ -198,7 +207,7 @@ No PSPDFKit key is needed: PDFs, EPUBs and snapshots all open in Zotero's web-ba
 | ChatGPT sign-in, tokens | `app/src/main/java/org/zotero/android/ai/auth/` |
 | Responses API client | `app/src/main/java/org/zotero/android/ai/api/` |
 | Note format, Markdown → note HTML | `app/src/main/java/org/zotero/android/ai/chat/` |
-| Library tools | `app/src/main/java/org/zotero/android/ai/tools/` |
+| Library tools, page images | `app/src/main/java/org/zotero/android/ai/tools/` (`PdfPages.kt`), `desktop-plugin/src/content/{tools,pdf}.js`, `mcp-server/zotero_ai_mcp/pdf.py` |
 | Chat panel UI and logic (reader and library) | `app/src/main/java/org/zotero/android/ai/ui/` |
 | Split layout, foldable session restore, page/area capture | `screens/reader/ReaderAiSplitLayout.kt`, `screens/reader/ReaderSessionRestore.kt`, `screens/reader/ReaderViewModel.kt` |
 | Library screen integration | `screens/allitems/` |

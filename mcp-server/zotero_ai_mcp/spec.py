@@ -31,7 +31,7 @@ class Spec:
     def mcp_tools(self, scope):
         out = []
         for t in self.tools:
-            if scope != "write" and (t.get("x-write") or t.get("x-mcp-only")):
+            if scope != "write" and (t.get("x-write") or t.get("x-write-scope")):
                 continue
             schema = copy.deepcopy(t.get("parameters") or {"type": "object", "properties": {}})
             props = schema.get("properties", {})

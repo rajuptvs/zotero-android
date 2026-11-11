@@ -52,6 +52,18 @@ ZoteroAI.TestEndpoints = {
 			let run = await ZoteroAI.Approvals.run({ origin: { kind: "test" }, name: data.name, args: data.args || {}, present: async () => true });
 			return run.result;
 		});
+		// Renders a PDF sent by the conformance suite (same code as zotero_get_page_image).
+		E["/zotero-ai/test/pdf-render"] = endpoint(["POST"], async (data) => {
+			let bytes = Uint8Array.from(atob(data.pdf || ""), (c) => c.charCodeAt(0));
+			try {
+				let image = await ZoteroAI.Pdf.render(bytes, data.page, data.region ?? null, data.max_width ?? null);
+				return { result: { pageCount: image.pageCount, width: image.width, height: image.height }, image: image.data };
+			}
+			catch (e) {
+				if (e instanceof ZoteroAIToolError) return { result: { error: e.code, message: e.message } };
+				throw e;
+			}
+		});
 		// MCP test setup: turn the server on/off, add or revoke clients, set auto-approve.
 		E["/zotero-ai/test/mcp-client"] = endpoint(["POST"], async (data) => {
 			if ("enable" in data) ZoteroAI.McpServer.setEnabled(data.enable);
@@ -89,7 +101,7 @@ ZoteroAI.TestEndpoints = {
 					let turn = await R.toolsForTurn();
 					let entry = turn.index.get(data.name);
 					if (!entry) return { error: "unknown tool" };
-					return data.action == "describe" ? { description: R.describe(entry, data.args || {}) } : { output: await R.call(entry, data.args || {}) };
+					return data.action == "describe" ? { description: R.describe(entry, data.args || {}) } : await R.call(entry, data.args || {});
 				}
 			}
 			return { error: "unknown action" };

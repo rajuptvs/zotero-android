@@ -33,7 +33,8 @@ approval in Zotero. Details: [`../ai/spec/mcp.md`](../ai/spec/mcp.md).
 | `src/content/auth.js` | Sign in with ChatGPT (registration, PKCE, refresh, revocation); tokens in the login manager |
 | `src/content/api.js` | Responses API: model list, streaming |
 | `src/content/chat.js` | A conversation: context block, tool loop with approvals, notes, history |
-| `src/content/tools.js` | The 15 tools of `ai/spec/tools.json`, on Zotero's APIs |
+| `src/content/tools.js` | The tools of `ai/spec/tools.json`, on Zotero's APIs |
+| `src/content/pdf.js` | PDF pages as images, drawn with the pdf.js of Zotero's reader |
 | `src/content/notes.js` | Note formats and Markdown → note HTML |
 | `src/content/panel.js` | The panel UI |
 | `src/content/windows.js` | Puts the panel in the window, follows tabs, reader selection popup |

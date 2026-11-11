@@ -17,6 +17,7 @@ TOOLS = [
     {"name": "save_note", "description": "Save a note somewhere else.",
      "inputSchema": {"type": "object", "properties": {"title": {"type": "string"}, "body": {"type": "string"}}}},
     {"name": "picture", "description": "Returns an image and a caption.", "inputSchema": {"type": "object", "properties": {}}},
+    {"name": "gallery", "description": "Returns five images.", "inputSchema": {"type": "object", "properties": {}}},
     {"name": "broken", "description": "Always fails.", "inputSchema": {"type": "object", "properties": {}}},
     {"name": "weird.name/v2", "description": "x" * 800},
 ]
@@ -87,7 +88,12 @@ class Fixture:
         if name == "save_note":
             return {"content": [{"type": "text", "text": f"saved {args.get('title')}"}]}
         if name == "picture":
-            return {"content": [{"type": "image", "data": "iVBORw0KGgo=", "mimeType": "image/png"}, {"type": "text", "text": "a picture"}]}
+            return {"content": [{"type": "image", "data": "iVBORw0KGgo=", "mimeType": "image/png"},
+                                {"type": "image", "data": "PHN2Zy8+", "mimeType": "image/svg+xml"},
+                                {"type": "image", "data": "not base64!", "mimeType": "image/png"},
+                                {"type": "text", "text": "a picture"}]}
+        if name == "gallery":
+            return {"content": [{"type": "image", "data": f"R0lGODlh{i}A==", "mimeType": "image/gif"} for i in range(5)]}
         if name == "broken":
             return {"content": [{"type": "text", "text": "it broke"}], "isError": True}
         return {"content": [{"type": "text", "text": "ok"}]}

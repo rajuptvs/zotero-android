@@ -139,6 +139,39 @@
     },
     {
       "type": "function",
+      "name": "zotero_get_pdf_info",
+      "description": "Get the number of pages in an item's PDF. Use before zotero_get_page_image.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "item_key": {"type": "string", "description": "Key of the item or of the PDF attachment."}
+        },
+        "required": ["item_key"],
+        "additionalProperties": false
+      },
+      "strict": true,
+      "x-write": false
+    },
+    {
+      "type": "function",
+      "name": "zotero_get_page_image",
+      "description": "Look at a page of an item's PDF, or part of a page, as an image: figures, tables, equations, diagrams, scanned pages. The image comes with the result. To read a figure closely, look at the whole page first, then ask for the figure's region at a larger width.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "item_key": {"type": "string", "description": "Key of the item or of the PDF attachment."},
+          "page": {"type": "integer", "description": "Page number, starting at 1."},
+          "region": {"type": ["array", "null"], "items": {"type": "number"}, "description": "[x, y, width, height] as fractions (0 to 1) of the page, measured from its top-left corner; null for the whole page."},
+          "max_width": {"type": ["integer", "null"], "description": "Width of the image in pixels, 200-2000. Default 1200."}
+        },
+        "required": ["item_key", "page", "region", "max_width"],
+        "additionalProperties": false
+      },
+      "strict": true,
+      "x-write": false
+    },
+    {
+      "type": "function",
       "name": "zotero_batch_update_tags",
       "description": "Add and/or remove tags on one or more items. Requires the user's approval.",
       "parameters": {
@@ -240,6 +273,22 @@
     },
     {
       "type": "function",
+      "name": "zotero_get_pdf_file",
+      "description": "Get an item's PDF file itself (up to 25 MB), as an embedded resource.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "item_key": {"type": "string", "description": "Key of the item or of the PDF attachment."}
+        },
+        "required": ["item_key"],
+        "additionalProperties": false
+      },
+      "strict": true,
+      "x-write": false,
+      "x-mcp-only": true
+    },
+    {
+      "type": "function",
       "name": "zotero_await_approval",
       "description": "Wait for the user's decision on a change that is waiting for approval in Zotero, and get its result. Use the approval_id from a pending_approval result; don't repeat the original call.",
       "parameters": {
@@ -252,7 +301,8 @@
       },
       "strict": true,
       "x-write": false,
-      "x-mcp-only": true
+      "x-mcp-only": true,
+      "x-write-scope": true
     }
   ]
 }

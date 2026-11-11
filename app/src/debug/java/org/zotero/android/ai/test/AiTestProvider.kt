@@ -32,6 +32,7 @@ import org.zotero.android.sync.SyncScheduler
  *   ... --method markdown --extra args64:s:<base64 {"markdown"}>  (answer → note HTML)
  *   ... --method policy  (shouldAsk for every tool)
  *   ... --method mcpremote --extra args64:s:<base64 {"action": "set"|"tools"|"describe"|"call", ...}>
+ *   ... --method pdfrender --extra args64:s:<base64 {"pdf", "page", "region", "max_width"}>
  * Writes run without the approval card, like the desktop plugin's test endpoint.
  */
 class AiTestProvider : ContentProvider() {
@@ -65,6 +66,30 @@ class AiTestProvider : ContentProvider() {
 
             // The chat's MCP client (ai/spec/mcp-client.md), compared with desktop by run.py.
             "mcpremote" -> runBlocking { mcpRemoteTest(args) }
+
+            // Renders a PDF sent by run.py (same code as zotero_get_page_image).
+            "pdfrender" -> {
+                val file = java.io.File(context!!.cacheDir, "aitest.pdf")
+                file.writeBytes(android.util.Base64.decode(args.get("pdf").asString, android.util.Base64.DEFAULT))
+                try {
+                    val image = org.zotero.android.ai.tools.PdfPages.render(file, args.get("page").asInt, args.get("region"), args.get("max_width"))
+                    JsonObject().apply {
+                        add("result", JsonObject().apply {
+                            addProperty("pageCount", image.pageCount)
+                            addProperty("width", image.width)
+                            addProperty("height", image.height)
+                        })
+                        addProperty("image", android.util.Base64.encodeToString(image.jpeg, android.util.Base64.NO_WRAP))
+                    }
+                } catch (e: org.zotero.android.ai.tools.ToolError) {
+                    JsonObject().apply {
+                        add("result", JsonObject().apply {
+                            addProperty("error", e.code)
+                            addProperty("message", e.message)
+                        })
+                    }
+                }
+            }
 
             // The approval rule for every tool, with auto-approve off and on (compared with desktop).
             "policy" -> JsonObject().apply {
@@ -114,7 +139,14 @@ class AiTestProvider : ContentProvider() {
 
             else -> JsonObject().apply { addProperty("error", "unknown method $method") }
         }
-        return Bundle().apply { putString("result", result.toString()) }
+        // Binder replies are small: a large result (a page image) goes to a file run.py reads.
+        val text = result.toString()
+        if (text.length > 200_000) {
+            val file = java.io.File(context!!.cacheDir, "aitest-result.json")
+            file.writeText(text)
+            return Bundle().apply { putString("result", JsonObject().apply { addProperty("_file", file.absolutePath) }.toString()) }
+        }
+        return Bundle().apply { putString("result", text) }
     }
 
     private suspend fun mcpRemoteTest(args: JsonObject): JsonObject {
@@ -148,7 +180,17 @@ class AiTestProvider : ContentProvider() {
                 val callArgs = args.getAsJsonObject("args") ?: JsonObject()
                 JsonObject().apply {
                     if (args.get("action").asString == "describe") addProperty("description", remote.describe(entry, callArgs))
-                    else addProperty("output", remote.call(entry, callArgs))
+                    else remote.call(entry, callArgs).let { called ->
+                        addProperty("output", called.output)
+                        add("images", JsonArray().apply {
+                            called.images.forEach { image ->
+                                add(JsonObject().apply {
+                                    addProperty("mimeType", image.mimeType)
+                                    addProperty("data", image.data)
+                                })
+                            }
+                        })
+                    }
                 }
             }
             else -> JsonObject().apply { addProperty("error", "unknown action") }

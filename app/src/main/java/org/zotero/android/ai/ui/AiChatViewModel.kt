@@ -465,6 +465,7 @@ internal class AiChatViewModel @Inject constructor(
         val activity = remote?.unavailable.orEmpty().map { "$it isn't available" }.toMutableList()
         val answer = StringBuilder()
         var rounds = 0
+        var imagesSent = 0
         while (true) {
             val calls = mutableListOf<JsonObject>()
             val roundText = StringBuilder()
@@ -526,11 +527,14 @@ internal class AiChatViewModel @Inject constructor(
                 updateState { copy(phase = ChatPhase.RunningTool(toolLabel(name))) }
                 val entry = remote?.index?.get(name)
                 var remoteOutput: String? = null
+                var images = emptyList<org.zotero.android.ai.mcp.McpRemote.Image>() // sent with the result, this turn only (chat.md)
                 val result = if (entry != null) {
                     val description = mcpRemote.describe(entry, args)
                     updateState { copy(phase = ChatPhase.RunningTool("${entry.toolName} on ${entry.server.name}")) }
                     if (!mcpRemote.shouldAsk(entry, mcpSeen) || askUser(name, description)) {
-                        remoteOutput = mcpRemote.call(entry, args)
+                        val called = mcpRemote.call(entry, args)
+                        remoteOutput = called.output
+                        images = called.images
                         tainted = true
                         mcpSeen = true
                         val failed = runCatching { JsonParser.parseString(remoteOutput).asJsonObject.get("isError").asBoolean }.getOrDefault(true)
@@ -554,16 +558,30 @@ internal class AiChatViewModel @Inject constructor(
                 } else {
                     tools.execute(name, args).also {
                         activity += toolLabel(name) + (if (it.has("error")) " (failed)" else "")
+                        images = it.remove("_content")?.takeIf { c -> c.isJsonArray }?.asJsonArray
+                            ?.mapNotNull { c -> c.takeIf { it.isJsonObject }?.asJsonObject }
+                            ?.filter { c -> c.get("type")?.asString == "image" }
+                            ?.map { c -> org.zotero.android.ai.mcp.McpRemote.Image(c.get("mimeType").asString, c.get("data").asString) }
+                            .orEmpty()
                     }
                 }
                 updateState { copy(liveActivity = activity.toList()) }
+                // A cap on images per answer keeps requests a reasonable size (chat.md).
+                var shownResult = result
+                if (imagesSent + images.size > maxTurnImages) {
+                    if (entry == null) shownResult = errorResult("unavailable", "That's the most images one answer can use; answer with the ones you have.")
+                    images = emptyList()
+                }
+                imagesSent += images.size
+                val outputText = remoteOutput ?: shownResult.toString()
                 val output = JsonObject().apply {
                     addProperty("type", "function_call_output")
                     addProperty("call_id", callId)
-                    addProperty("output", remoteOutput ?: result.toString())
+                    addProperty("output", outputText)
                 }
-                input.add(output)
+                // Later turns get the result without its images (trace).
                 trace += output
+                input.add(if (images.isEmpty()) output else output.deepCopy().apply { add("output", client.outputWithImages(outputText, images)) })
             }
             updateState { copy(phase = ChatPhase.Thinking) }
         }
@@ -876,6 +894,8 @@ internal class AiChatViewModel @Inject constructor(
         "zotero_get_recent" -> "Checking recent additions"
         "zotero_get_notes" -> "Reading notes"
         "zotero_get_annotations" -> "Reading annotations"
+        "zotero_get_pdf_info" -> "Opening a PDF"
+        "zotero_get_page_image" -> "Looking at a page"
         "zotero_batch_update_tags" -> "Updating tags"
         "zotero_set_item_collections" -> "Updating collections"
         "zotero_create_collection" -> "Creating a collection"
@@ -887,6 +907,7 @@ internal class AiChatViewModel @Inject constructor(
 
     private companion object {
         const val maxDocumentChars = 200_000
+        const val maxTurnImages = 10
         const val maxToolRounds = 12
         const val approveGuardMillis = 400L
 

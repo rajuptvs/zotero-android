@@ -291,6 +291,38 @@ ZoteroAI.Tools = {
 			};
 		},
 
+		async zotero_get_pdf_info(args) {
+			let attachment = ZoteroAI.Pdf.attachment(this._item(this._str(args, "item_key")));
+			let pageCount = await ZoteroAI.Pdf.pageCount(async () => (await ZoteroAI.Pdf.read(attachment)).bytes);
+			return { attachmentKey: attachment.key, pageCount };
+		},
+
+		// The image travels beside the result, as MCP content parts under _content (mcp.md, chat.md).
+		async zotero_get_page_image(args) {
+			let attachment = ZoteroAI.Pdf.attachment(this._item(this._str(args, "item_key")));
+			let image = await ZoteroAI.Pdf.render(async () => (await ZoteroAI.Pdf.read(attachment)).bytes, args.page, args.region, args.max_width);
+			return {
+				attachmentKey: attachment.key,
+				page: args.page,
+				pageCount: image.pageCount,
+				width: image.width,
+				height: image.height,
+				mimeType: "image/jpeg",
+				_content: [{ type: "image", data: image.data, mimeType: "image/jpeg" }],
+			};
+		},
+
+		async zotero_get_pdf_file(args) {
+			let attachment = ZoteroAI.Pdf.attachment(this._item(this._str(args, "item_key")));
+			let { bytes, filename } = await ZoteroAI.Pdf.read(attachment, ZoteroAI.Pdf.MAX_RESOURCE_BYTES);
+			return {
+				attachmentKey: attachment.key,
+				filename,
+				size: bytes.length,
+				_content: [{ type: "resource", resource: { uri: `zotero://attachment/${attachment.key}`, mimeType: "application/pdf", blob: ZoteroAI.Pdf.base64(bytes) } }],
+			};
+		},
+
 		async zotero_get_collections() {
 			let collections = Zotero.Collections.getByLibrary(this.libraryID, true).filter((c) => !c.deleted);
 			collections.sort((a, b) => ZoteroAI.compareText(a.name, b.name) || (a.key < b.key ? -1 : 1));

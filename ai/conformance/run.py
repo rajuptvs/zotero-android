@@ -44,7 +44,13 @@ class Android:
         prefix = "Result: Bundle[{result="
         if not out.startswith(prefix):
             raise RuntimeError(f"android {method} {arg}: {out[:300]}")
-        return json.loads(out[len(prefix):-2])
+        result = json.loads(out[len(prefix):-2])
+        if isinstance(result, dict) and list(result) == ["_file"]:  # too large for a binder reply
+            package = self.uri.split("//")[1].removesuffix(".aitest")
+            data = subprocess.run(["adb", "-s", self.serial, "exec-out", "run-as", package, "cat", result["_file"]],
+                                  capture_output=True, timeout=timeout).stdout
+            result = json.loads(data.decode("utf-8"))
+        return result
 
     def tool(self, name, args):
         return self._call("tool", name, args)
@@ -66,6 +72,9 @@ class Android:
 
     def mcpremote(self, payload):
         return self._call("mcpremote", None, payload)
+
+    def pdfrender(self, payload):
+        return self._call("pdfrender", None, payload)
 
 
 class Desktop:
@@ -103,6 +112,9 @@ class Desktop:
 
     def mcpremote(self, payload):
         return self._post("/zotero-ai/test/mcp-remote", payload)
+
+    def pdfrender(self, payload):
+        return self._post("/zotero-ai/test/pdf-render", payload)
 
     def eval(self, code):
         return self._post("/zotero-ai/test/eval", {"code": code})["result"]
@@ -202,6 +214,14 @@ class Mcp:
             raise RuntimeError(f"mcp {method}: {status} {reply}")
         return reply["result"]
 
+    def call_full(self, name, args):
+        """The tool result with its extra content parts under _content, as the desktop test hook returns it."""
+        result = self.rpc("tools/call", {"name": name, "arguments": args})
+        value = json.loads(result["content"][0]["text"])
+        if result["content"][1:]:
+            value["_content"] = result["content"][1:]
+        return value
+
     def call(self, name, args):
         """The tool result as JSON, plus isError."""
         result = self.rpc("tools/call", {"name": name, "arguments": args})
@@ -298,6 +318,9 @@ class StandaloneApprover:
     def restart(self):
         return self._post("/admin/api/restart", {})
 
+    def pdfrender(self, payload):
+        return self._post("/admin/api/render", payload)
+
     def decline_all(self):
         for op in self.pending():
             self.decide(op["id"], False)
@@ -310,7 +333,7 @@ def spec_mcp_tools(spec_tools, scope):
     """ai/spec/mcp.md catalog derivation, computed independently of the server."""
     out = []
     for t in spec_tools:
-        if scope != "write" and (t.get("x-write") or t.get("x-mcp-only")):
+        if scope != "write" and (t.get("x-write") or t.get("x-write-scope")):
             continue
         schema = json.loads(json.dumps(t["parameters"]))
         props = schema.get("properties", {})
@@ -563,20 +586,145 @@ def mcp_client_checks(results, android, desktop, serial):
         full = len(json.dumps(dict(sorted(long_args.items())), ensure_ascii=False, separators=(",", ":")))
         check(results, f"mcp client: approval text cut at 300 characters",
               dd.startswith("Run echo on Fixture SSE!: {\"b\":") and dd.endswith(f" … (+{full - 300} more characters)"), dd[-60:])
-        for name, args in ((echo1, {"text": "<b>&'\" ünï"}), (echo2, {"text": "via SSE"}),
-                           (mcp_function_name("Fixture JSON", "picture"), {}), (mcp_function_name("Fixture JSON", "broken"), {})):
-            oa = android.mcpremote({"action": "call", "name": name, "args": args})["output"]
-            od = desktop.mcpremote({"action": "call", "name": name, "args": args})["output"]
-            check(results, f"mcp client: call output equal ({name})", oa == od, f"{oa} != {od}")
-        check(results, f"mcp client: output shapes",
-              json.loads(desktop.mcpremote({"action": "call", "name": mcp_function_name("Fixture JSON", "picture"), "args": {}})["output"])
-              == {"isError": False, "text": "[image omitted]\na picture"}
-              and json.loads(desktop.mcpremote({"action": "call", "name": mcp_function_name("Fixture JSON", "broken"), "args": {}})["output"])
-              == {"isError": True, "text": "it broke"})
+        for name, args in ((echo1, {"text": "<b>&'\" ünï"}), (echo2, {"text": "via SSE"}), (mcp_function_name("Fixture JSON", "picture"), {}),
+                           (mcp_function_name("Fixture JSON", "gallery"), {}), (mcp_function_name("Fixture JSON", "broken"), {})):
+            oa = android.mcpremote({"action": "call", "name": name, "args": args})
+            od = desktop.mcpremote({"action": "call", "name": name, "args": args})
+            check(results, f"mcp client: call output and images equal ({name})", oa == od, f"{oa} != {od}")
+        call = lambda tool: desktop.mcpremote({"action": "call", "name": mcp_function_name("Fixture JSON", tool), "args": {}})
+        picture, gallery = call("picture"), call("gallery")
+        check(results, f"mcp client: output shapes, images passed on",
+              json.loads(picture["output"]) == {"isError": False, "text": "[image 1]\n[image omitted]\n[image omitted]\na picture"}
+              and picture["images"] == [{"mimeType": "image/png", "data": "iVBORw0KGgo="}]
+              and json.loads(gallery["output"])["text"] == "[image 1]\n[image 2]\n[image 3]\n[image 4]\n[image omitted]"
+              and [i["data"] for i in gallery["images"]] == [f"R0lGODlh{i}A==" for i in range(4)]
+              and json.loads(call("broken")["output"]) == {"isError": True, "text": "it broke"} and call("broken")["images"] == [])
     finally:
         for client in (android, desktop):
             client.mcpremote({"action": "set", "servers": []})
         fixture.stop()
+
+
+PDF_ITEM = "XX9GTLGR"  # the PDF of "Attention Is All You Need", synced through file storage
+
+
+def pdf_expected_size(page, region, max_width):
+    """tools.md size rule, computed here from the test PDF's own page boxes."""
+    import math
+    from pdf_fixture import PAGES
+    p = PAGES[page - 1]
+    x0, y0, x1, y1 = p["crop"] or p["media"]
+    w, h = x1 - x0, y1 - y0
+    if p["rotate"] in (90, 270):
+        w, h = h, w
+    rx0, ry0, rx1, ry1 = 0, 0, 1, 1
+    if region:
+        rx0, ry0, rx1, ry1 = max(0, region[0]), max(0, region[1]), min(1, region[0] + region[2]), min(1, region[1] + region[3])
+    W, H = (rx1 - rx0) * w, (ry1 - ry0) * h
+    width = min(max(int(max_width), 200), 2000)
+    height = math.floor(width * H / W + 0.5)
+    if height > 2000:
+        height, width = 2000, math.floor(2000 * W / H + 0.5)
+    return width, height
+
+
+def image_distance(a, b):
+    """Mean difference (0-255) of two base64 JPEGs, shrunk to 32 × 32 greyscale; None without Pillow."""
+    try:
+        from PIL import Image
+    except ImportError:
+        return None
+    import io
+    load = lambda data: Image.open(io.BytesIO(base64.b64decode(data))).convert("L").resize((32, 32))
+    pa, pb = load(a).getdata(), load(b).getdata()
+    return sum(abs(x - y) for x, y in zip(pa, pb)) / len(pa)
+
+
+def close_sizes(a, b):
+    """Results equal, except width/height may differ by a pixel or two (Android uses whole points)."""
+    if set(a) != set(b) or any(a[k] != b[k] for k in a if k not in ("width", "height")):
+        return False
+    return all(abs(a.get(k, 0) - b.get(k, 0)) <= 2 for k in ("width", "height"))
+
+
+def pdf_checks(results, android, desktop, standalone=None):
+    """Page images and PDF files (ai/spec/tools.md, "PDF pages and files") on every host."""
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import hashlib
+    import pdf_fixture
+    fixture = base64.b64encode(pdf_fixture.make_pdf()).decode()
+    renderers = [("android", android), ("desktop", desktop)] + ([("standalone", standalone)] if standalone else [])
+    print("== pdf: page images of the test PDF")
+    for page, region, width in pdf_fixture.RENDERS:
+        out = {name: r.pdfrender({"pdf": fixture, "page": page, "region": region, "max_width": width}) for name, r in renderers}
+        expected = pdf_expected_size(page, region, width)
+        ref = out["desktop"]
+        problems = []
+        if (ref["result"].get("width"), ref["result"].get("height")) != expected:
+            problems.append(f"desktop size {ref['result']} != {expected}")
+        for name, o in out.items():
+            if not close_sizes(o["result"], ref["result"]):
+                problems.append(f"{name} {o['result']} != desktop {ref['result']}")
+            elif name != "desktop":
+                d = image_distance(o["image"], ref["image"])
+                if d is not None and d > 12:
+                    problems.append(f"{name} image differs from desktop by {d:.1f}")
+        check(results, f"pdf: page {page} region {region} width {width} on {', '.join(out)}", not problems, "; ".join(problems))
+    for page, region, width in pdf_fixture.ERRORS:
+        out = {name: r.pdfrender({"pdf": fixture, "page": page, "region": region, "max_width": width})["result"] for name, r in renderers}
+        same = all(o == out["desktop"] for o in out.values())
+        check(results, f"pdf: page {page} region {region} refused the same way", same and out["desktop"].get("error") == "invalid_argument",
+              json.dumps(out)[:300])
+
+    print("== pdf: the same paper on every device")
+    tools = [("android", android.tool), ("desktop", desktop.tool)]
+    if standalone:
+        token = standalone.client("conformance pdf", "read")["created"]
+        tools.append(("standalone", Mcp(standalone.url, token["token"]).call_full))
+    calls = [
+        ("zotero_get_pdf_info", {"item_key": PDF_ITEM}),
+        ("zotero_get_page_image", {"item_key": PDF_ITEM, "page": 3, "region": [0.3, 0.05, 0.45, 0.45], "max_width": 800}),
+        ("zotero_get_page_image", {"item_key": PDF_ITEM, "page": 1, "region": None, "max_width": None}),
+        ("zotero_get_page_image", {"item_key": PDF_ITEM, "page": 99, "region": None, "max_width": None}),
+        ("zotero_get_pdf_info", {"item_key": "NOPE0000"}),
+    ]
+    no_pdf = next((i["key"] for i in desktop.tool("zotero_search_items", {"query": "", "tag": None, "collection_key": None, "limit": 100})["items"]
+                   if not any(a["contentType"] == "application/pdf" for a in desktop.tool("zotero_get_item_metadata", {"item_key": i["key"]})["attachments"])), None)
+    if no_pdf:
+        calls.append(("zotero_get_pdf_info", {"item_key": no_pdf}))
+    for name, args in calls:
+        out = {host: fn(name, args) for host, fn in tools}
+        images = {host: o.pop("_content", None) for host, o in out.items()}
+        ref = out["desktop"]
+        problems = [f"{host} {json.dumps(o)[:160]} != desktop {json.dumps(ref)[:160]}" for host, o in out.items() if not close_sizes(o, ref)]
+        if name == "zotero_get_page_image" and "error" not in ref:
+            for host, parts in images.items():
+                if not parts or parts[0].get("type") != "image" or parts[0].get("mimeType") != "image/jpeg":
+                    problems.append(f"{host} sent no JPEG")
+                elif host != "desktop":
+                    d = image_distance(parts[0]["data"], images["desktop"][0]["data"])
+                    if d is not None and d > 12:
+                        problems.append(f"{host} image differs from desktop by {d:.1f}")
+        check(results, f"pdf: {name} {json.dumps(args)[:70]} same on {', '.join(out)}", not problems, "; ".join(problems))
+
+    # The PDF itself, over MCP only: the same file from the desktop and the standalone server.
+    desktop_human = DesktopApprover(desktop)
+    created = desktop_human.client("conformance pdf", "read")
+    files = {"desktop": Mcp(created["url"], created["created"]["token"]).call_full("zotero_get_pdf_file", {"item_key": PDF_ITEM})}
+    if standalone:
+        files["standalone"] = Mcp(standalone.url, token["token"]).call_full("zotero_get_pdf_file", {"item_key": PDF_ITEM})
+    digests = {}
+    for host, f in files.items():
+        part = (f.get("_content") or [{}])[0]
+        blob = base64.b64decode(part.get("resource", {}).get("blob", ""))
+        ok = (part.get("type") == "resource" and part["resource"].get("mimeType") == "application/pdf"
+              and part["resource"].get("uri") == f"zotero://attachment/{PDF_ITEM}" and len(blob) == f.get("size") and blob[:5] == b"%PDF-")
+        check(results, f"pdf: {host} zotero_get_pdf_file sends the file as a resource", ok, json.dumps({k: v for k, v in f.items() if k != "_content"}))
+        digests[host] = (f.get("filename"), f.get("size"), hashlib.sha256(blob).hexdigest())
+    if standalone:
+        check(results, "pdf: desktop and standalone send the same file", digests["desktop"] == digests["standalone"], json.dumps(digests))
+        standalone.setup({"revoke": token["client"]["id"]})
+    desktop_human.setup({"revoke": created["created"]["client"]["id"]})
 
 
 def describe_calls(collection_key):
@@ -621,6 +769,7 @@ def main():
                     help="per-launch secret written by desktop-plugin/scripts/dev-zotero.sh")
     ap.add_argument("--skip-writes", action="store_true")
     ap.add_argument("--no-mcp", dest="mcp", action="store_false", help="skip the MCP server checks")
+    ap.add_argument("--no-pdf", dest="pdf", action="store_false", help="skip the page image and PDF checks")
     ap.add_argument("--standalone", help="also check the standalone MCP server at this base URL, e.g. http://127.0.0.1:8770")
     ap.add_argument("--standalone-password", default=os.environ.get("ZOTERO_AI_MCP_ADMIN_PASSWORD"))
     opts = ap.parse_args()
@@ -683,6 +832,9 @@ def main():
         check(results, f"math: {name}", a == d and len(a) > 0, f"{a} != {d}")
 
     mcp_client_checks(results, android, desktop, opts.serial)
+
+    if opts.pdf:
+        pdf_checks(results, android, desktop, StandaloneApprover(opts.standalone, opts.standalone_password) if opts.standalone else None)
 
     if opts.mcp:
         with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "spec", "tools.json")) as f:

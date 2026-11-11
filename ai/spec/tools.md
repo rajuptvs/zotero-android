@@ -90,6 +90,38 @@ Default limit 10.
 "comment": "...", "pageLabel": "3", "color": "#ffd400", "tags": ["..."]}]}` across all the item's
 attachments (or the one attachment), sorted by attachment key then Zotero's annotation sort index.
 
+### PDF pages and files
+`zotero_get_pdf_info`, `zotero_get_page_image` and `zotero_get_pdf_file` resolve `item_key` to a
+PDF: the key itself if it's a PDF attachment, else the item's first PDF attachment (title order,
+trashed ones skipped). Unknown key → `not_found`; no PDF → `not_found` ("This item has no PDF.").
+The client reads its own copy of the file, downloading it first the way it normally does (Zotero
+storage or WebDAV) if it isn't there. A file it can't get (not synced, a linked file it can't
+reach, a failed download, over 200 MB) or can't open (not a PDF, damaged, password-protected) →
+`unavailable`. Checks run in this order: the item and its PDF, the file, `page`, `region`.
+
+- `zotero_get_pdf_info` → `{"attachmentKey": "...", "pageCount": 15}`.
+- `zotero_get_page_image` → `{"attachmentKey": "...", "page": 3, "pageCount": 15, "width": 1200,
+  "height": 1553, "mimeType": "image/jpeg"}`, with the image beside it (below).
+  - `page` starts at 1; outside 1…pageCount → `invalid_argument` ("page must be between 1 and 15.").
+  - The page is taken as displayed: its crop box, with its rotation applied. `region` is
+    `[x, y, width, height]` in fractions of that page from its top-left corner (`null` = the whole
+    page). Not exactly 4 numbers, or `width`/`height` ≤ 0 → `invalid_argument`. It's clipped to the
+    page: `x0 = max(0, x)`, `y0 = max(0, y)`, `x1 = min(1, x + width)`, `y1 = min(1, y + height)`;
+    nothing left (`x1 ≤ x0` or `y1 ≤ y0`) → `invalid_argument`.
+  - Size: with `W` × `H` the clipped region in points, `width` = `max_width` (default 1200,
+    clamped to 200–2000) and `height` = `round(width × H / W)`; if that's over 2000, `height` =
+    2000 and `width` = `round(2000 × W / H)`. Both at least 1; `round(v)` = `floor(v + 0.5)`.
+  - The image is a JPEG (quality 85) of the region drawn on white, stretched to exactly that size.
+    Android's renderer reports page sizes in whole points, so its sizes can differ by a pixel or
+    two, and it doesn't draw annotations stored in the PDF (the desktop draws those marked
+    printable, the standalone server all visible ones).
+- `zotero_get_pdf_file` (MCP only) → `{"attachmentKey": "...", "filename": "paper.pdf",
+  "size": 2215244}`, with the file beside it. Over 25 MB → `unavailable`.
+
+The image or file isn't part of the JSON result: chat clients send it as an `input_image` next to
+the result (`chat.md`), MCP servers as an extra content part (`mcp.md`). Results are otherwise
+compared like any other tool's; conformance compares images loosely (size, and a coarse picture).
+
 ### Write tools
 Writes need the user's approval in the client UI before running. They change only the local
 library; normal Zotero sync propagates them.
@@ -99,8 +131,8 @@ library; normal Zotero sync propagates them.
 - Arguments are checked against the tool's schema before anything is asked or run: a plain object,
   required keys present (an omitted nullable becomes `null`), correct types (integers are whole
   numbers, array items have the item type), no unknown keys. Otherwise `invalid_argument`.
-- Tools marked `x-mcp-only` (`zotero_await_approval`) exist only on the MCP server (`mcp.md`); chat
-  clients never offer them to the model.
+- Tools marked `x-mcp-only` (`zotero_await_approval`, `zotero_get_pdf_file`) exist only on the MCP
+  server (`mcp.md`); chat clients never offer them to the model.
 
 - `zotero_batch_update_tags` → `{"updated": ["KEY1", ...]}` keys whose tags changed, sorted.
   Adding an existing tag or removing a missing one is not a change. Unknown keys → `not_found`

@@ -50,9 +50,16 @@ function tools, and run the calls. Android and desktop follow these rules exactl
 - Declined → `{"error":"declined","message":"The user declined this change."}`.
 
 ## Results
-- `function_call_output` is the JSON string of
+- The result text is the JSON string of
   `{"isError": <result.isError>, "text": <text parts joined with "\n", other parts as
-  "[<type> omitted]", first 20000 characters>}`; a transport failure gives
+  "[<type> omitted]" (`content` when `type` isn't a non-empty string), first 20000 characters>}`; a transport failure gives
   `{"isError": true, "text": "<server> couldn't be reached: <reason>"}`.
+- Image parts (`{type: "image", data, mimeType}`) with `mimeType` `image/png`, `image/jpeg`,
+  `image/gif` or `image/webp` and `data` of at most 4,000,000 characters that is base64 (only
+  `A–Z a–z 0–9 + /`, up to two `=` at the end, a length that's a multiple of 4) and starts with that
+  type's signature (`iVBORw0KGgo`, `/9j/`, `R0lGOD`, `UklGR`) are passed to the model,
+  the first 4 of them: in the text they appear as `[image <n>]` (n from 1), and `output` becomes
+  `[{"type":"input_text","text":<result text>}, {"type":"input_image","image_url":"data:<mimeType>;base64,<data>"}, ...]`
+  (`chat.md`). Other image parts are `[image omitted]`. Without images, `output` is the result text.
 - The activity line is `<tool> on <server name>` (`(failed)` appended on error, `Declined: …` when
   declined).

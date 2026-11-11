@@ -25,6 +25,14 @@ reference implementation): dynamic registration with `agent_name_hint` = client 
   output item, run the tool (asking for approval if `x-write`), append the `function_call` item and
   a `function_call_output` item (`output` = the result JSON string), and request again. Stop after
   12 tool rounds in one turn.
+- A result that comes with images (`zotero_get_page_image`, or image parts from an MCP server,
+  `mcp-client.md`) has `output` =
+  `[{"type":"input_text","text":<result JSON string>}, {"type":"input_image","image_url":"data:<type>;base64,..."}, ...]`.
+  Images are sent only in the turn that produced them: the trace kept for later turns has the
+  plain result JSON string instead, so a later question asks for the page again. At most 10 images
+  per turn: past that, a `zotero_get_page_image` result becomes
+  `{"error":"unavailable","message":"That's the most images one answer can use; answer with the ones you have."}`
+  and MCP results go without their images.
 - `reasoning.effort`: the user's choice for the model, if the model lists reasoning levels.
 
 ## Approvals

@@ -2,6 +2,7 @@
 import argparse
 import getpass
 import os
+import re
 import sys
 
 from .server import Server, State
@@ -19,6 +20,18 @@ def api_key(args):
     return key
 
 
+def webdav(args):
+    if not args.webdav_url:
+        return None
+    if not args.webdav_username or not args.webdav_password_file:
+        sys.exit("--webdav-url needs --webdav-username and --webdav-password-file.")
+    with open(os.path.expanduser(args.webdav_password_file), encoding="utf-8") as f:
+        password = f.read().strip()
+    if args.webdav_url.lower().startswith("http://") and not re.match(r"^http://(127\.0\.0\.1|localhost|\[::1\])[:/]", args.webdav_url, re.I):
+        print("Warning: the WebDAV address is plain http://, so the password is sent unencrypted.", file=sys.stderr)
+    return {"url": args.webdav_url, "username": args.webdav_username, "password": password}
+
+
 def main():
     ap = argparse.ArgumentParser(prog="zotero_ai_mcp", description="Zotero AI MCP server on the Zotero Web API (works with Zotero closed).")
     ap.add_argument("--data-dir", default=os.environ.get("ZOTERO_AI_MCP_DATA", DEFAULT_DATA))
@@ -28,6 +41,9 @@ def main():
     serve.add_argument("--port", type=int, default=8770)
     serve.add_argument("--allowed-host", action="append", default=[], help="extra Host header to accept, e.g. zotero.example.ts.net")
     serve.add_argument("--api-key-file")
+    serve.add_argument("--webdav-url", help="your WebDAV address as entered in Zotero's sync settings, if Zotero keeps your files there")
+    serve.add_argument("--webdav-username")
+    serve.add_argument("--webdav-password-file")
     serve.add_argument("--test-hooks", action="store_true", help=argparse.SUPPRESS)
     sub.add_parser("set-admin-password", help="set the password for the approval page")
     add = sub.add_parser("add-client", help="add an agent and print its token (shown once)")
@@ -60,7 +76,9 @@ def main():
         from .spec import Spec
         if not state.data.get("admin"):
             sys.exit("Set an admin password first: python3 -m zotero_ai_mcp set-admin-password")
+        from .pdf import Files
         library = Library(api_key(args))
+        library.files = Files(library, os.path.join(args.data_dir, "files"), webdav(args))
         library.sync(force=True)
         server = Server(library, Spec(), state, args.host, args.port, args.allowed_host, args.test_hooks)
         print(f"Zotero AI MCP: http://{args.host}:{args.port}/mcp  ·  approvals: http://{args.host}:{args.port}/admin", flush=True)

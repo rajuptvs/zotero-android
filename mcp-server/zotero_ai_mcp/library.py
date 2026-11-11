@@ -4,8 +4,10 @@ A cached copy of My Library is kept in memory and brought up to date with `?sinc
 before each tool call (at most every few seconds). Results must equal the desktop plugin's and the
 Android app's; ai/conformance/run.py compares them.
 """
+import base64
 import html
 import json
+import os
 import re
 import threading
 import time
@@ -15,11 +17,13 @@ import urllib.request
 import uuid
 import xml.etree.ElementTree as ET
 
-from . import markdown_lite
+from . import markdown_lite, pdf
 
 API = "https://api.zotero.org"
 NON_REGULAR = {"attachment", "note", "annotation"}
 TEXT_TYPES = ["application/pdf", "application/epub+zip", "text/html"]
+PDF_TOOLS = {"zotero_get_pdf_info", "zotero_get_page_image", "zotero_get_pdf_file"}
+FILE_SLOTS = threading.BoundedSemaphore(2)
 
 
 class ToolError(Exception):
@@ -86,6 +90,7 @@ class Library:
         self.collections = {}  # key → data
         self.last_sync = 0.0
         self.lock = threading.RLock()
+        self.files = None  # pdf.Files, set by the server
         schema = self._get("/schema", base=API)
         self.fields = {}  # itemType → {baseField: field}
         self.type_fields = {}  # itemType → set of field names
@@ -274,15 +279,20 @@ class Library:
     # region Tools
 
     def execute(self, name, args):
-        """Runs a tool (arguments already validated). Never raises: failures are error objects."""
+        """Runs a tool (arguments already validated). Never raises: failures are error objects.
+        A page image or PDF comes back as extra MCP content parts under "_content"."""
         try:
             fn = getattr(self, "t_" + name.removeprefix("zotero_"), None)
             if not fn:
                 raise ToolError("invalid_argument", f"Unknown tool {name}")
             with self.lock:
                 self.sync()
-                return fn(args)
-        except ToolError as e:
+                if name not in PDF_TOOLS:
+                    return fn(args)
+                attachment = dict(self.pdf_attachment(self._str(args, "item_key")))
+            # Downloading and rendering can take a while: not under the library lock.
+            return fn(args, attachment)
+        except (ToolError, pdf.PdfError) as e:
             return {"error": e.code, "message": str(e)}
         except urllib.error.HTTPError as e:
             return {"error": "failed", "message": f"Zotero Web API: HTTP {e.code}"}
@@ -350,6 +360,41 @@ class Library:
             raise
         total = u16len(text)
         return {"attachmentKey": attachment["key"], "totalChars": total, "truncated": total > max_chars, "text": u16cut(text, max_chars)}
+
+    def pdf_attachment(self, key):
+        item = self.get_item(key)
+        candidates = [item] if item.get("itemType") == "attachment" else self.children(item["key"], "attachment")
+        candidates = sorted((a for a in candidates if a.get("contentType") == "application/pdf"), key=self.title_order)
+        if not candidates:
+            raise ToolError("not_found", "This item has no PDF.")
+        return candidates[0]
+
+    def _pdf_path(self, attachment):
+        if not self.files:
+            raise ToolError("unavailable", "This server isn't set up to read files.")
+        return self.files.path(attachment)
+
+    def t_get_pdf_info(self, args, attachment):
+        path, _ = self._pdf_path(attachment)
+        return {"attachmentKey": attachment["key"], "pageCount": pdf.page_count(path)}
+
+    def t_get_page_image(self, args, attachment):
+        path, _ = self._pdf_path(attachment)
+        page_count, width, height, jpeg = pdf.render(path, args.get("page"), args.get("region"), args.get("max_width"))
+        return {"attachmentKey": attachment["key"], "page": args.get("page"), "pageCount": page_count,
+                "width": width, "height": height, "mimeType": "image/jpeg",
+                "_content": [{"type": "image", "data": base64.b64encode(jpeg).decode("ascii"), "mimeType": "image/jpeg"}]}
+
+    def t_get_pdf_file(self, args, attachment):
+        path, filename = self._pdf_path(attachment)
+        size = os.path.getsize(path)
+        if size > pdf.MAX_RESOURCE_BYTES:
+            raise ToolError("unavailable", f"The PDF is {size / 1048576:.1f} MB; the limit is 25 MB. Use zotero_get_page_image instead.")
+        with FILE_SLOTS, open(path, "rb") as f:  # a few files read and encoded at a time
+            blob = base64.b64encode(f.read()).decode("ascii")
+        return {"attachmentKey": attachment["key"], "filename": filename, "size": size,
+                "_content": [{"type": "resource", "resource": {"uri": f"zotero://attachment/{attachment['key']}", "mimeType": "application/pdf",
+                                                               "blob": blob}}]}
 
     def t_get_collections(self, args):
         collections = [c for c in self.collections.values() if not c.get("deleted")]
