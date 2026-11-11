@@ -85,7 +85,8 @@ ZoteroAI.Approvals = (() => {
 			if (checked.error) return { result: checked, description: null, approved: false };
 			let argsJSON = ZoteroAI.canonicalJSON(checked.args);
 			let description = await ZoteroAI.Tools.describeWrite(name, JSON.parse(argsJSON));
-			let autoApprove = origin?.kind == "chat" && ZoteroAI.pref("autoApproveChanges") === true;
+			// Not after another service's result in the same turn (ai/spec/mcp-client.md).
+			let autoApprove = origin?.kind == "chat" && !origin.tainted && ZoteroAI.pref("autoApproveChanges") === true;
 			let approved = !ZoteroAI.Spec.shouldAsk(name, autoApprove) || await present(description);
 			if (!approved) return { result: DECLINED, description, approved: false };
 			let result = await ZoteroAI.Tools.execute(name, JSON.parse(argsJSON), capability);

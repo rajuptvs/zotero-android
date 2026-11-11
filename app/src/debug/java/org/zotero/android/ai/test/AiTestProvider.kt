@@ -31,6 +31,7 @@ import org.zotero.android.sync.SyncScheduler
  *   ... --method notes --extra args64:s:<base64 {"html"}>  (how a conversation note is read back)
  *   ... --method markdown --extra args64:s:<base64 {"markdown"}>  (answer → note HTML)
  *   ... --method policy  (shouldAsk for every tool)
+ *   ... --method mcpremote --extra args64:s:<base64 {"action": "set"|"tools"|"describe"|"call", ...}>
  * Writes run without the approval card, like the desktop plugin's test endpoint.
  */
 class AiTestProvider : ContentProvider() {
@@ -40,6 +41,7 @@ class AiTestProvider : ContentProvider() {
     interface Deps {
         fun zoteroTools(): ZoteroTools
         fun toolSpec(): org.zotero.android.ai.tools.ZoteroToolSpec
+        fun mcpRemote(): org.zotero.android.ai.mcp.McpRemote
         fun syncScheduler(): SyncScheduler
     }
 
@@ -60,6 +62,9 @@ class AiTestProvider : ContentProvider() {
             "describe" -> runBlocking {
                 JsonObject().apply { addProperty("description", deps.zoteroTools().describeWrite(arg.orEmpty(), args)) }
             }
+
+            // The chat's MCP client (ai/spec/mcp-client.md), compared with desktop by run.py.
+            "mcpremote" -> runBlocking { mcpRemoteTest(args) }
 
             // The approval rule for every tool, with auto-approve off and on (compared with desktop).
             "policy" -> JsonObject().apply {
@@ -110,6 +115,44 @@ class AiTestProvider : ContentProvider() {
             else -> JsonObject().apply { addProperty("error", "unknown method $method") }
         }
         return Bundle().apply { putString("result", result.toString()) }
+    }
+
+    private suspend fun mcpRemoteTest(args: JsonObject): JsonObject {
+        val remote = deps.mcpRemote()
+        return when (args.get("action")?.asString) {
+            "set" -> {
+                remote.servers().forEach { remote.remove(it.id) }
+                args.getAsJsonArray("servers")?.forEach { e ->
+                    val o = e.asJsonObject
+                    remote.save(
+                        org.zotero.android.ai.mcp.McpServer(
+                            id = o.get("id").asString, name = o.get("name").asString, url = o.get("url").asString,
+                            enabled = o.get("enabled")?.asBoolean ?: true, autoReadOnly = o.get("autoReadOnly")?.asBoolean ?: false,
+                        ),
+                        o.get("authorization")?.takeIf { !it.isJsonNull }?.asString,
+                    )
+                }
+                JsonObject().apply { addProperty("servers", remote.servers().size) }
+            }
+            "tools" -> remote.toolsForTurn().let { turn ->
+                JsonObject().apply {
+                    add("tools", turn.tools)
+                    add("unavailable", com.google.gson.JsonArray().apply { turn.unavailable.forEach { add(it) } })
+                    add("shouldAsk", JsonObject().apply { turn.index.forEach { (name, entry) -> addProperty(name, remote.shouldAsk(entry)) } })
+                }
+            }
+            "describe", "call" -> {
+                val turn = remote.toolsForTurn()
+                val entry = turn.index[args.get("name").asString]
+                    ?: return JsonObject().apply { addProperty("error", "unknown tool") }
+                val callArgs = args.getAsJsonObject("args") ?: JsonObject()
+                JsonObject().apply {
+                    if (args.get("action").asString == "describe") addProperty("description", remote.describe(entry, callArgs))
+                    else addProperty("output", remote.call(entry, callArgs))
+                }
+            }
+            else -> JsonObject().apply { addProperty("error", "unknown action") }
+        }
     }
 
     override fun query(uri: Uri, p: Array<out String>?, s: String?, a: Array<out String>?, o: String?): Cursor? = null

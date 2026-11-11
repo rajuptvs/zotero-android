@@ -6,6 +6,11 @@
         <domain includeSubdomains="true">local</domain>
         <domain includeSubdomains="true">www.zotero.org</domain>
     </domain-config>
+    <!-- MCP servers on this device (ai/spec/mcp-client.md: http only for loopback). -->
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">127.0.0.1</domain>
+        <domain includeSubdomains="false">localhost</domain>
+    </domain-config>
     <!-- ChatGPT sign-in and API: bearer tokens, so trust system CAs only. -->
     <domain-config>
         <domain includeSubdomains="false">auth.openai.com</domain>

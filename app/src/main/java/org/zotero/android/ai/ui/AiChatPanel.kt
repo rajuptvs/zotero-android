@@ -246,6 +246,8 @@ private fun PanelHeader(
     val context = LocalContext.current
     var showHistory by remember { mutableStateOf(false) }
     var showMenu by remember { mutableStateOf(false) }
+    var showMcpServers by remember { mutableStateOf(false) }
+    if (showMcpServers) McpServersDialog(viewModel) { showMcpServers = false }
     val signedIn = viewState.auth as? ChatGptAuthState.SignedIn
     Row(
         modifier = Modifier
@@ -329,6 +331,13 @@ private fun PanelHeader(
                             Checkbox(checked = viewState.autoApprove, onCheckedChange = null)
                         },
                         onClick = { viewModel.setAutoApprove(!viewState.autoApprove) }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("MCP servers…") },
+                        onClick = {
+                            showMenu = false
+                            showMcpServers = true
+                        }
                     )
                     DropdownMenuItem(
                         text = { Text(stringResource(Strings.reader_chat_usage)) },

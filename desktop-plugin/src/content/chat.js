@@ -335,20 +335,32 @@ ZoteroAI.ChatSession = class {
 	 * back, and repeat until it answers (ai/spec/chat.md).
 	 */
 	async _runTurn(model, effort, context, turns, abort) {
+		// The user's own MCP servers, offered as function tools (ai/spec/mcp-client.md).
+		let remote = { tools: [], index: new Map(), unavailable: [] };
+		try {
+			remote = await ZoteroAI.McpRemote.toolsForTurn();
+		}
+		catch (e) {
+			Zotero.logError(e);
+		}
+		if (remote.tools.length) context += "\n" + ZoteroAI.McpRemote.CONTEXT_LINE;
+		let tools = [...ZoteroAI.Spec.apiTools(), ...remote.tools];
+		// After a result from another service, Zotero writes always ask for the rest of the turn.
+		let tainted = false;
 		let input = [{ role: "developer", content: context }];
 		for (let turn of turns) {
 			if (turn.role == "assistant") for (let item of turn.trace || []) input.push(item);
 			input.push(ZoteroAI.API.inputItem(turn));
 		}
 		let instructions = this.state.isLibrary ? ZoteroAI.Spec.prompts.library : ZoteroAI.Spec.prompts.reader;
-		let trace = [], activity = [];
+		let trace = [], activity = remote.unavailable.map((name) => `${name} isn't available`);
 		let answer = "";
 		for (let round = 0; ; round++) {
 			if (abort.cancelled) return null;
 			let calls = [];
 			let roundText = "";
 			await ZoteroAI.API.stream({
-				model, instructions, input, tools: ZoteroAI.Spec.apiTools(), reasoningEffort: effort, abort,
+				model, instructions, input, tools, reasoningEffort: effort, abort,
 				onEvent: (event) => {
 					if (abort.cancelled) return;
 					if (event.type == "phase") {
@@ -386,12 +398,27 @@ ZoteroAI.ChatSession = class {
 				let label = ZoteroAI.TOOL_LABELS[call.name] || call.name;
 				this.set({ phase: { tool: label } });
 				let result;
-				if (!ZoteroAI.Spec.isKnown(call.name)) {
+				let output = null; // set directly for MCP-client calls
+				let entry = remote.index.get(call.name);
+				if (entry) {
+					let description = ZoteroAI.McpRemote.describe(entry, args);
+					this.set({ phase: { tool: `${entry.tool.name} on ${entry.server.name}` } });
+					if (!ZoteroAI.McpRemote.shouldAsk(entry) || await this._askApproval(call.name, description)) {
+						output = await ZoteroAI.McpRemote.call(entry, args);
+						tainted = true;
+						activity.push(`${entry.tool.name} on ${entry.server.name}` + (JSON.parse(output).isError ? " (failed)" : ""));
+					}
+					else {
+						output = JSON.stringify(ZoteroAI.Approvals.DECLINED);
+						activity.push("Declined: " + description);
+					}
+				}
+				else if (!ZoteroAI.Spec.isKnown(call.name)) {
 					result = { error: "invalid_argument", message: `Unknown tool ${call.name}` };
 				}
 				else if (ZoteroAI.Spec.isWrite(call.name)) {
 					let run = await ZoteroAI.Approvals.run({
-						origin: { kind: "chat" },
+						origin: { kind: "chat", tainted },
 						name: call.name,
 						args,
 						present: (description) => this._askApproval(call.name, description),
@@ -407,9 +434,9 @@ ZoteroAI.ChatSession = class {
 				}
 				if (abort.cancelled) return null;
 				this.set({ liveActivity: [...activity] });
-				let output = { type: "function_call_output", call_id: call.call_id, output: JSON.stringify(result) };
-				input.push(output);
-				trace.push(output);
+				let outputItem = { type: "function_call_output", call_id: call.call_id, output: output ?? JSON.stringify(result) };
+				input.push(outputItem);
+				trace.push(outputItem);
 			}
 			if (abort.cancelled) return null;
 			this.set({ phase: "thinking" });

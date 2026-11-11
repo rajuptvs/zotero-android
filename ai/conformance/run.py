@@ -64,6 +64,9 @@ class Android:
     def policy(self):
         return self._call("policy")
 
+    def mcpremote(self, payload):
+        return self._call("mcpremote", None, payload)
+
 
 class Desktop:
     name = "desktop"
@@ -97,6 +100,9 @@ class Desktop:
 
     def policy(self):
         return self._post("/zotero-ai/test/policy", {})
+
+    def mcpremote(self, payload):
+        return self._post("/zotero-ai/test/mcp-remote", payload)
 
     def eval(self, code):
         return self._post("/zotero-ai/test/eval", {"code": code})["result"]
@@ -440,6 +446,67 @@ def mcp_checks(results, android, desktop, spec_tools, write_key, xpi_path):
     return note_keys
 
 
+def mcp_function_name(server, tool):
+    """ai/spec/mcp-client.md naming, computed independently."""
+    import re
+    s = re.sub(r"[^a-z0-9]+", "_", server.lower()).strip("_")[:16]
+    t = re.sub(r"[^A-Za-z0-9_-]", "_", tool)
+    return f"mcp_{s}_{t}"[:64]
+
+
+def mcp_client_checks(results, android, desktop, serial):
+    print("== chat panels as MCP clients")
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from mcp_fixture import Fixture, TOOLS
+    fixture = Fixture()
+    port = fixture.port
+    subprocess.run(["adb", "-s", serial, "reverse", f"tcp:{port}", f"tcp:{port}"], check=True, capture_output=True)
+    servers = [
+        {"id": "s1", "name": "Fixture JSON", "url": f"http://127.0.0.1:{port}/mcp", "enabled": True, "autoReadOnly": True, "authorization": "Bearer fixture-token"},
+        {"id": "s2", "name": "Fixture SSE!", "url": f"http://127.0.0.1:{port}/mcp-sse", "enabled": True, "autoReadOnly": False, "authorization": "Bearer fixture-token"},
+        {"id": "s3", "name": "Down", "url": "http://127.0.0.1:9/mcp", "enabled": True, "autoReadOnly": False, "authorization": None},
+        {"id": "s4", "name": "Off", "url": f"http://127.0.0.1:{port}/mcp", "enabled": False, "autoReadOnly": False, "authorization": "Bearer fixture-token"},
+    ]
+    try:
+        for client in (android, desktop):
+            client.mcpremote({"action": "set", "servers": servers})
+        a, d = android.mcpremote({"action": "tools"}), desktop.mcpremote({"action": "tools"})
+        problems = diff(a, d)
+        check(results, "mcp client: same tools, availability and approval rule on both", not problems, "; ".join(problems[:4]))
+        names = [t["name"] for t in d["tools"]]
+        expected = [mcp_function_name(s["name"], t["name"]) for s in servers[:2] for t in TOOLS]
+        check(results, "mcp client: tool names follow the spec", names == expected, f"{names} != {expected}")
+        check(results, "mcp client: unreachable server reported, disabled one skipped", d["unavailable"] == ["Down"], json.dumps(d["unavailable"]))
+        weird = next(t for t in d["tools"] if t["name"].endswith("weird_name_v2"))
+        check(results, "mcp client: long description cut, missing schema replaced",
+              len(weird["description"]) == 500 and weird["parameters"] == {"type": "object", "properties": {}} and weird["strict"] is False)
+        echo1, echo2 = mcp_function_name("Fixture JSON", "echo"), mcp_function_name("Fixture SSE!", "echo")
+        check(results, "mcp client: read-only tools skip asking only where allowed",
+              d["shouldAsk"][echo1] is False and d["shouldAsk"][echo2] is True
+              and d["shouldAsk"][mcp_function_name("Fixture JSON", "save_note")] is True)
+        long_args = {"text": "x" * 400, "b": "<tag> & \"quotes\" — ünïcode"}
+        for name, args in ((echo1, {"text": "hi"}), (echo2, long_args)):
+            da, dd = android.mcpremote({"action": "describe", "name": name, "args": args}), desktop.mcpremote({"action": "describe", "name": name, "args": args})
+            check(results, f"mcp client: approval text equal ({name})", da == dd, f"{da} != {dd}")
+        dd = desktop.mcpremote({"action": "describe", "name": echo2, "args": long_args})["description"]
+        check(results, "mcp client: approval text cut at 300 characters",
+              dd.startswith("Run echo on Fixture SSE!: {\"b\":") and dd.endswith("…") and len(dd) == len("Run echo on Fixture SSE!: ") + 301, dd[:80])
+        for name, args in ((echo1, {"text": "<b>&'\" ünï"}), (echo2, {"text": "via SSE"}),
+                           (mcp_function_name("Fixture JSON", "picture"), {}), (mcp_function_name("Fixture JSON", "broken"), {})):
+            oa = android.mcpremote({"action": "call", "name": name, "args": args})["output"]
+            od = desktop.mcpremote({"action": "call", "name": name, "args": args})["output"]
+            check(results, f"mcp client: call output equal ({name})", oa == od, f"{oa} != {od}")
+        check(results, "mcp client: output shapes",
+              json.loads(desktop.mcpremote({"action": "call", "name": mcp_function_name("Fixture JSON", "picture"), "args": {}})["output"])
+              == {"isError": False, "text": "[image omitted]\na picture"}
+              and json.loads(desktop.mcpremote({"action": "call", "name": mcp_function_name("Fixture JSON", "broken"), "args": {}})["output"])
+              == {"isError": True, "text": "it broke"})
+    finally:
+        for client in (android, desktop):
+            client.mcpremote({"action": "set", "servers": []})
+        fixture.stop()
+
+
 def describe_calls(collection_key):
     """Write calls whose approval text must read the same on both devices."""
     five = ["2MIWXEWJ", "7KLQ74ZI", "4GX3L9K7", "GITEQ5QS", "W74L85JR"]
@@ -540,6 +607,8 @@ def main():
     for name, text in MATH_SAMPLES:
         a, d = marks(android.markdown(text)), marks(desktop.markdown(text))
         check(results, f"math: {name}", a == d and len(a) > 0, f"{a} != {d}")
+
+    mcp_client_checks(results, android, desktop, opts.serial)
 
     if opts.mcp:
         with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "spec", "tools.json")) as f:

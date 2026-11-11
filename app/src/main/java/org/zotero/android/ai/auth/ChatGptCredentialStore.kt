@@ -135,6 +135,21 @@ class ChatGptCredentialStore @Inject constructor(
         }
     }
 
+    /** Other secrets (e.g. MCP server tokens), encrypted like the ChatGPT tokens. null removes. */
+    fun saveSecret(name: String, value: String?) {
+        prefs.edit(commit = true) {
+            if (value == null) remove("$keySecretPrefix$name") else putString("$keySecretPrefix$name", encrypt(value))
+        }
+    }
+
+    fun readSecret(name: String): String? =
+        prefs.getString("$keySecretPrefix$name", null)?.let { runCatching { decrypt(it) }.getOrNull() }
+
+    /** The user's MCP servers (ai/spec/mcp-client.md), as JSON; secrets are kept separately. */
+    var mcpServersJson: String?
+        get() = prefs.getString(keyMcpServers, null)
+        set(value) = prefs.edit(commit = true) { putString(keyMcpServers, value) }
+
     fun clearTokens() {
         prefs.edit(commit = true) { remove(keyCredentials) }
     }
@@ -176,6 +191,8 @@ class ChatGptCredentialStore @Inject constructor(
     }
 
     private companion object {
+        const val keySecretPrefix = "secret_"
+        const val keyMcpServers = "mcpServers"
         const val androidKeyStore = "AndroidKeyStore"
         const val keyAlias = "zotero_chatgpt_credentials"
         const val transformation = "AES/GCM/NoPadding"

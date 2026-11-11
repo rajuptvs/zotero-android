@@ -73,6 +73,7 @@ ZoteroAI.Windows = {
 		let panel = new ZoteroAI.Panel(doc, {
 			close: () => this.setOpen(win, false),
 			openConnect: () => ZoteroAI.ConnectDialog.open(win),
+			openMcpServers: () => ZoteroAI.McpServersDialog.open(win),
 			attachPage: () => this._capturePage(win),
 			selectArea: () => this._captureArea(win),
 		});

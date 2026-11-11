@@ -30,6 +30,7 @@ Object.assign(ZoteroAI, {
 		this.McpServer.shutdown();
 		this.ApprovalSheet.shutdown();
 		this.ConnectDialog.close();
+		this.McpServersDialog.close();
 		this.Windows?.shutdown?.();
 		for (let win of Zotero.getMainWindows()) this.removeFromWindow(win);
 	},

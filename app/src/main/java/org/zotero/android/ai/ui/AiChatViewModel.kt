@@ -101,6 +101,7 @@ internal class AiChatViewModel @Inject constructor(
     private val client: ChatGptResponsesClient,
     private val toolSpec: ZoteroToolSpec,
     private val tools: ZoteroTools,
+    private val mcpRemote: org.zotero.android.ai.mcp.McpRemote,
     private val dbWrapperMain: DbWrapperMain,
     private val schemaController: SchemaController,
     private val dispatchers: Dispatchers,
@@ -249,9 +250,15 @@ internal class AiChatViewModel @Inject constructor(
         approval?.complete(false)
     }
 
-    private suspend fun askApproval(name: String, description: String): Boolean {
+    private suspend fun askApproval(name: String, description: String, tainted: Boolean = false): Boolean {
         // Read the setting now (another screen may have changed it); the spec decides what always asks.
-        if (!toolSpec.shouldAsk(name, credentialStore.autoApproveChanges)) return true
+        // Not after another service's result in the same turn (ai/spec/mcp-client.md).
+        if (!toolSpec.shouldAsk(name, credentialStore.autoApproveChanges && !tainted)) return true
+        return askUser(name, description)
+    }
+
+    /** Shows the approval card and waits for the user's answer. */
+    private suspend fun askUser(name: String, description: String): Boolean {
         val deferred = CompletableDeferred<Boolean>()
         approval = deferred
         updateState { copy(pendingApproval = PendingApproval(name, description)) }
@@ -310,6 +317,24 @@ internal class AiChatViewModel @Inject constructor(
             rememberLibraryChat()
         }
     }
+
+    // region MCP servers (ai/spec/mcp-client.md)
+
+    fun mcpServers(): List<org.zotero.android.ai.mcp.McpServer> = mcpRemote.servers()
+
+    fun saveMcpServer(server: org.zotero.android.ai.mcp.McpServer, authorization: String?, updateAuthorization: Boolean = true) {
+        mcpRemote.save(server, authorization, updateAuthorization)
+    }
+
+    fun removeMcpServer(id: String) = mcpRemote.remove(id)
+
+    /** Connects and reports how many tools the server offers. */
+    suspend fun testMcpServer(server: org.zotero.android.ai.mcp.McpServer): String = runCatching {
+        val count = mcpRemote.toolsForTurn().index.values.count { it.server.id == server.id }
+        if (!server.enabled) "${server.name} is turned off." else if (count > 0) "${server.name}: $count tools" else "${server.name} isn't available."
+    }.getOrElse { "${server.name}: ${it.message}" }
+
+    // endregion
 
     /** Keeps the library conversation across a fold/unfold (LibraryAiSessionRestore). */
     private fun rememberLibraryChat() {
@@ -403,21 +428,33 @@ internal class AiChatViewModel @Inject constructor(
         context: String,
         turns: List<ChatTurn>,
     ): ChatTurn {
+        // The user's own MCP servers, offered as function tools (ai/spec/mcp-client.md).
+        val remote = runCatching { mcpRemote.toolsForTurn() }.getOrElse {
+            Timber.w(it, "AiChatViewModel: MCP servers unavailable")
+            null
+        }
+        val turnContext = if (remote != null && remote.tools.size() > 0) "$context\n${org.zotero.android.ai.mcp.McpRemote.CONTEXT_LINE}" else context
+        val turnTools = JsonArray().apply {
+            addAll(toolSpec.apiTools)
+            remote?.let { addAll(it.tools) }
+        }
+        // After a result from another service, Zotero writes always ask for the rest of the turn.
+        var tainted = false
         val input = JsonArray()
-        input.add(client.developerItem(context))
+        input.add(client.developerItem(turnContext))
         turns.forEach { turn ->
             if (turn.role == "assistant") turn.trace.forEach { input.add(it.deepCopy()) }
             input.add(client.inputItem(turn))
         }
         val instructions = if (viewState.isLibrary) toolSpec.libraryInstructions else toolSpec.readerInstructions
         val trace = mutableListOf<JsonObject>()
-        val activity = mutableListOf<String>()
+        val activity = remote?.unavailable.orEmpty().map { "$it isn't available" }.toMutableList()
         val answer = StringBuilder()
         var rounds = 0
         while (true) {
             val calls = mutableListOf<JsonObject>()
             val roundText = StringBuilder()
-            client.stream(model, instructions, input, toolSpec.apiTools, effort).collect { event ->
+            client.stream(model, instructions, input, turnTools, effort).collect { event ->
                 when (event) {
                     is ChatStreamEvent.Phase -> updateState {
                         copy(
@@ -473,11 +510,25 @@ internal class AiChatViewModel @Inject constructor(
                 val args = runCatching { JsonParser.parseString(argumentsText).asJsonObject }
                     .getOrElse { JsonObject() }
                 updateState { copy(phase = ChatPhase.RunningTool(toolLabel(name))) }
-                val result = if (!toolSpec.isKnown(name)) {
+                val entry = remote?.index?.get(name)
+                var remoteOutput: String? = null
+                val result = if (entry != null) {
+                    val description = mcpRemote.describe(entry, args)
+                    updateState { copy(phase = ChatPhase.RunningTool("${entry.toolName} on ${entry.server.name}")) }
+                    if (!mcpRemote.shouldAsk(entry) || askUser(name, description)) {
+                        remoteOutput = mcpRemote.call(entry, args)
+                        tainted = true
+                        val failed = runCatching { JsonParser.parseString(remoteOutput).asJsonObject.get("isError").asBoolean }.getOrDefault(true)
+                        activity += "${entry.toolName} on ${entry.server.name}" + if (failed) " (failed)" else ""
+                    } else {
+                        activity += "Declined: $description"
+                    }
+                    errorResult("declined", "The user declined this change.")
+                } else if (!toolSpec.isKnown(name)) {
                     errorResult("invalid_argument", "Unknown tool $name")
                 } else if (toolSpec.isWrite(name)) {
                     val description = tools.describeWrite(name, args)
-                    if (askApproval(name, description)) {
+                    if (askApproval(name, description, tainted)) {
                         tools.execute(name, args).also {
                             activity += (if (it.has("error")) "✗ " else "✓ ") + description
                         }
@@ -494,7 +545,7 @@ internal class AiChatViewModel @Inject constructor(
                 val output = JsonObject().apply {
                     addProperty("type", "function_call_output")
                     addProperty("call_id", callId)
-                    addProperty("output", result.toString())
+                    addProperty("output", remoteOutput ?: result.toString())
                 }
                 input.add(output)
                 trace += output

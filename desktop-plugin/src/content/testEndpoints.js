@@ -20,7 +20,7 @@ ZoteroAI.TestEndpoints = {
 	PATHS: ["/zotero-ai/test/tool", "/zotero-ai/test/sync", "/zotero-ai/test/status",
 		"/zotero-ai/test/eval", "/zotero-ai/test/screenshot", "/zotero-ai/test/signin",
 		"/zotero-ai/test/describe", "/zotero-ai/test/notes", "/zotero-ai/test/markdown", "/zotero-ai/test/policy",
-		"/zotero-ai/test/mcp-client", "/zotero-ai/test/approvals"],
+		"/zotero-ai/test/mcp-client", "/zotero-ai/test/approvals", "/zotero-ai/test/mcp-remote"],
 
 	register() {
 		let token = Services.env.get("ZOTERO_AI_TEST_TOKEN");
@@ -70,6 +70,29 @@ ZoteroAI.TestEndpoints = {
 				return { restarted: true };
 			}
 			return { pending: ZoteroAI.Approvals.pending().map((op) => ({ id: op.id, clientId: op.clientId, tool: op.tool, description: op.description })) };
+		});
+		// The chat's MCP client (ai/spec/mcp-client.md), compared with Android by run.py.
+		E["/zotero-ai/test/mcp-remote"] = endpoint(["POST"], async (data) => {
+			let R = ZoteroAI.McpRemote;
+			switch (data.action) {
+				case "set":
+					for (let s of R.servers()) await R.remove(s.id);
+					for (let s of data.servers || []) await R.save(s, s.authorization ?? null);
+					return { servers: R.servers().length };
+				case "tools": {
+					let turn = await R.toolsForTurn();
+					return { tools: turn.tools, unavailable: turn.unavailable,
+						shouldAsk: Object.fromEntries([...turn.index].map(([name, entry]) => [name, R.shouldAsk(entry)])) };
+				}
+				case "describe":
+				case "call": {
+					let turn = await R.toolsForTurn();
+					let entry = turn.index.get(data.name);
+					if (!entry) return { error: "unknown tool" };
+					return data.action == "describe" ? { description: R.describe(entry, data.args || {}) } : { output: await R.call(entry, data.args || {}) };
+				}
+			}
+			return { error: "unknown action" };
 		});
 		// The approval rule for every tool, with auto-approve off and on (compared with Android).
 		E["/zotero-ai/test/policy"] = endpoint(["POST"], async () => Object.fromEntries(ZoteroAI.Spec.tools.map((t) => [t.name, {
