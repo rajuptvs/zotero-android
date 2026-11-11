@@ -92,7 +92,13 @@ internal val librarySuggestions = listOf(
 )
 
 /** A write the model wants to make, waiting for the user. */
-internal data class PendingApproval(val toolName: String, val description: String)
+/** An approval card; [id] ties the Approve tap to this card, [shownAt] guards against double taps. */
+internal data class PendingApproval(
+    val toolName: String,
+    val description: String,
+    val id: String = java.util.UUID.randomUUID().toString(),
+    val shownAt: Long = android.os.SystemClock.uptimeMillis(),
+)
 
 @HiltViewModel
 internal class AiChatViewModel @Inject constructor(
@@ -242,7 +248,13 @@ internal class AiChatViewModel @Inject constructor(
 
     // region Approval
 
-    fun approvePending() {
+    /**
+     * Approves the card the user tapped, if it's still the current one and has been on screen long
+     * enough that the tap wasn't meant for the card before it (desktop panel.js does the same).
+     */
+    fun approvePending(id: String) {
+        val pending = viewState.pendingApproval ?: return
+        if (pending.id != id || android.os.SystemClock.uptimeMillis() - pending.shownAt < approveGuardMillis) return
         approval?.complete(true)
     }
 
@@ -438,8 +450,10 @@ internal class AiChatViewModel @Inject constructor(
             addAll(toolSpec.apiTools)
             remote?.let { addAll(it.tools) }
         }
-        // After a result from another service, Zotero writes always ask for the rest of the turn.
-        var tainted = false
+        // Text from other services (tool definitions, earlier results) is in the context: Zotero
+        // writes always ask, and after any MCP result so do "read-only" MCP tools (mcp-client.md).
+        var mcpSeen = turns.any { turn -> turn.trace.any { it.get("type")?.asString == "function_call" && it.get("name")?.asString.orEmpty().startsWith("mcp_") } }
+        var tainted = (remote?.tools?.size() ?: 0) > 0 || mcpSeen
         val input = JsonArray()
         input.add(client.developerItem(turnContext))
         turns.forEach { turn ->
@@ -515,9 +529,10 @@ internal class AiChatViewModel @Inject constructor(
                 val result = if (entry != null) {
                     val description = mcpRemote.describe(entry, args)
                     updateState { copy(phase = ChatPhase.RunningTool("${entry.toolName} on ${entry.server.name}")) }
-                    if (!mcpRemote.shouldAsk(entry) || askUser(name, description)) {
+                    if (!mcpRemote.shouldAsk(entry, mcpSeen) || askUser(name, description)) {
                         remoteOutput = mcpRemote.call(entry, args)
                         tainted = true
+                        mcpSeen = true
                         val failed = runCatching { JsonParser.parseString(remoteOutput).asJsonObject.get("isError").asBoolean }.getOrDefault(true)
                         activity += "${entry.toolName} on ${entry.server.name}" + if (failed) " (failed)" else ""
                     } else {
@@ -873,6 +888,7 @@ internal class AiChatViewModel @Inject constructor(
     private companion object {
         const val maxDocumentChars = 200_000
         const val maxToolRounds = 12
+        const val approveGuardMillis = 400L
 
         val documentTag = Regex("<(/?)document>", RegexOption.IGNORE_CASE)
     }

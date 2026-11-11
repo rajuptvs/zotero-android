@@ -185,7 +185,7 @@ internal fun AiChatPanel(
                     viewState.pendingApproval?.let { pending ->
                         ApprovalCard(
                             pending = pending,
-                            onApprove = viewModel::approvePending,
+                            onApprove = { viewModel.approvePending(pending.id) },
                             onDecline = viewModel::declinePending,
                         )
                     }

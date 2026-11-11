@@ -345,8 +345,10 @@ ZoteroAI.ChatSession = class {
 		}
 		if (remote.tools.length) context += "\n" + ZoteroAI.McpRemote.CONTEXT_LINE;
 		let tools = [...ZoteroAI.Spec.apiTools(), ...remote.tools];
-		// After a result from another service, Zotero writes always ask for the rest of the turn.
-		let tainted = false;
+		// Text from other services (tool definitions, earlier results) is in the context: Zotero
+		// writes always ask, and after any MCP result so do "read-only" MCP tools (mcp-client.md).
+		let mcpSeen = ZoteroAI.McpRemote.usedIn(turns);
+		let tainted = remote.tools.length > 0 || mcpSeen;
 		let input = [{ role: "developer", content: context }];
 		for (let turn of turns) {
 			if (turn.role == "assistant") for (let item of turn.trace || []) input.push(item);
@@ -403,9 +405,10 @@ ZoteroAI.ChatSession = class {
 				if (entry) {
 					let description = ZoteroAI.McpRemote.describe(entry, args);
 					this.set({ phase: { tool: `${entry.tool.name} on ${entry.server.name}` } });
-					if (!ZoteroAI.McpRemote.shouldAsk(entry) || await this._askApproval(call.name, description)) {
+					if (!ZoteroAI.McpRemote.shouldAsk(entry, mcpSeen) || await this._askApproval(call.name, description)) {
 						output = await ZoteroAI.McpRemote.call(entry, args);
 						tainted = true;
+						mcpSeen = true;
 						activity.push(`${entry.tool.name} on ${entry.server.name}` + (JSON.parse(output).isError ? " (failed)" : ""));
 					}
 					else {

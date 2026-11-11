@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -46,11 +47,16 @@ internal fun MathAnswer(blocks: List<String>, stateKey: String, modifier: Modifi
     val page = remember(colors, textSize) {
         mathPage(colors.onSurface, colors.primary, colors.surfaceVariant, colors.outlineVariant, textSize, dark = colors.surface.luminance() < 0.5f)
     }
-    val htmlBlocks = remember(blocks) { blocks.map(ChatMarkdown::toHtml) }
+    // Each block's HTML once: while streaming only the last block is new.
+    val htmlCache = remember { HashMap<String, String>() }
+    val htmlBlocks = remember(blocks) { blocks.map { block -> htmlCache.getOrPut(block) { ChatMarkdown.toHtml(block) } } }
+    var generation by remember { mutableIntStateOf(0) }
     var heightDp by rememberSaveable(stateKey) { mutableIntStateOf(0) }
-    val bridge = remember { MathBridge() }
+    val bridge = remember(generation) { MathBridge() }
     bridge.onHeight = { heightDp = it }
-    AndroidView(
+    // A WebView whose renderer was killed can't be used again; start a new one.
+    bridge.onRendererGone = { generation++ }
+    key(generation) { AndroidView(
         modifier = modifier
             .fillMaxWidth()
             .height(if (heightDp > 0) heightDp.dp else 48.dp),
@@ -66,6 +72,11 @@ internal fun MathAnswer(blocks: List<String>, stateKey: String, modifier: Modifi
                 webViewClient = object : WebViewClient() {
                     override fun onPageFinished(view: WebView, url: String?) {
                         bridge.pageReady(view)
+                    }
+
+                    override fun onRenderProcessGone(view: WebView, detail: android.webkit.RenderProcessGoneDetail?): Boolean {
+                        bridge.rendererGone()
+                        return true
                     }
 
                     override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
@@ -87,7 +98,7 @@ internal fun MathAnswer(blocks: List<String>, stateKey: String, modifier: Modifi
             bridge.push(webView, htmlBlocks)
         },
         onRelease = { it.destroy() },
-    )
+    ) }
 }
 
 /**
@@ -105,6 +116,13 @@ private class MathBridge {
 
     @Volatile
     var onHeight: (Int) -> Unit = {}
+    var onRendererGone: () -> Unit = {}
+
+    fun rendererGone() {
+        ready = false
+        view = null
+        main.post { onRendererGone() }
+    }
 
     fun pageLoading() {
         Timber.d("MathAnswer: page load")
@@ -115,6 +133,7 @@ private class MathBridge {
     fun pageReady(webView: WebView) {
         ready = true
         view = webView
+        sent = null // a new page has none of the blocks yet
         flush()
     }
 

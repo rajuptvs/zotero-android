@@ -41,8 +41,10 @@ class McpRemote @Inject constructor(
 ) {
     /** Serializes like JavaScript's JSON.stringify (no HTML escaping), so both clients agree. */
     private val gson = GsonBuilder().disableHtmlEscaping().create()
-    private val connectHttp = OkHttpClient.Builder().callTimeout(CONNECT_SECONDS, TimeUnit.SECONDS).build()
-    private val callHttp = OkHttpClient.Builder().callTimeout(CALL_SECONDS, TimeUnit.SECONDS).build()
+    // No redirects: the https / loopback-only rule must hold for every hop.
+    private val connectHttp = OkHttpClient.Builder().callTimeout(CONNECT_SECONDS, TimeUnit.SECONDS)
+        .followRedirects(false).followSslRedirects(false).build()
+    private val callHttp = connectHttp.newBuilder().callTimeout(CALL_SECONDS, TimeUnit.SECONDS).build()
 
     // region Configuration
 
@@ -73,7 +75,8 @@ class McpRemote @Inject constructor(
     fun checkUrl(url: String) {
         val uri = URI(url)
         val loopback = uri.host in listOf("127.0.0.1", "localhost", "[::1]", "::1")
-        require(uri.scheme == "https" || (uri.scheme == "http" && loopback)) {
+        val scheme = uri.scheme?.lowercase()
+        require(scheme == "https" || (scheme == "http" && loopback)) {
             "Use an https:// address (http:// only for this device)."
         }
     }
@@ -102,11 +105,12 @@ class McpRemote @Inject constructor(
             } ?: continue
             for (tool in client.tools) {
                 if (tools.size() >= MAX_TOOLS) break
-                val toolName = tool.get("name")?.asString ?: continue
+                // Skip malformed definitions rather than dropping the server.
+                val toolName = tool.string("name")?.takeIf { it.isNotEmpty() } ?: continue
                 val name = functionName(server.name, toolName)
                 if (name in index || toolSpec.isKnown(name)) continue
-                val schema = tool.get("inputSchema")
-                val parameters = if (schema != null && schema.isJsonObject && schema.asJsonObject.get("type")?.asString == "object") {
+                val schema = tool.get("inputSchema")?.takeIf { it.isJsonObject }?.asJsonObject
+                val parameters = if (schema != null && schema.string("type") == "object") {
                     schema.deepCopy()
                 } else {
                     JsonObject().apply {
@@ -114,8 +118,10 @@ class McpRemote @Inject constructor(
                         add("properties", JsonObject())
                     }
                 }
-                val description = tool.get("description")?.takeIf { it.isJsonPrimitive }?.asString
-                    ?.takeIf { it.isNotBlank() }?.take(500) ?: "Tool $toolName from ${server.name}"
+                // A huge schema is mostly text the server wrote into the model's context.
+                if (gson.toJson(parameters).length > MAX_SCHEMA_CHARS) continue
+                val description = tool.string("description")?.takeIf { it.isNotBlank() }?.take(500)
+                    ?: "Tool $toolName from ${server.name}"
                 tools.add(JsonObject().apply {
                     addProperty("type", "function")
                     addProperty("name", name)
@@ -135,15 +141,19 @@ class McpRemote @Inject constructor(
         return "mcp_${server}_$tool".take(64)
     }
 
-    /** Whether a call needs the user's decision (ai/spec/mcp-client.md, "Approvals"). */
-    fun shouldAsk(entry: Entry): Boolean {
-        val readOnly = entry.tool.getAsJsonObject("annotations")?.get("readOnlyHint")?.let { it.isJsonPrimitive && it.asBoolean } == true
-        return !(entry.server.autoReadOnly && readOnly)
+    /**
+     * Whether a call needs the user's decision (ai/spec/mcp-client.md, "Approvals"). Once any MCP
+     * result is in the conversation ([resultSeen]), every call asks.
+     */
+    fun shouldAsk(entry: Entry, resultSeen: Boolean = false): Boolean {
+        val readOnly = entry.tool.get("annotations")?.takeIf { it.isJsonObject }?.asJsonObject
+            ?.get("readOnlyHint")?.let { it.isJsonPrimitive && it.asJsonPrimitive.isBoolean && it.asBoolean } == true
+        return resultSeen || !(entry.server.autoReadOnly && readOnly)
     }
 
     fun describe(entry: Entry, args: JsonObject): String {
         var json = canonicalJson(args)
-        if (json.length > 300) json = json.take(300) + "…"
+        if (json.length > 300) json = json.take(300) + " … (+${json.length - 300} more characters)"
         return "Run ${entry.toolName} on ${entry.server.name}: $json"
     }
 
@@ -157,12 +167,12 @@ class McpRemote @Inject constructor(
         }.getOrElse {
             return@withContext output(true, "${entry.server.name} couldn't be reached: ${it.message ?: it}")
         }
-        val text = result.getAsJsonArray("content")?.joinToString("\n") { part ->
+        val text = result.get("content")?.takeIf { it.isJsonArray }?.asJsonArray?.joinToString("\n") { part ->
             val o = part.takeIf { it.isJsonObject }?.asJsonObject
             if (o?.get("type")?.asString == "text") o.get("text")?.asString.orEmpty()
             else "[${o?.get("type")?.asString ?: "content"} omitted]"
         }.orEmpty()
-        output(result.get("isError")?.let { it.isJsonPrimitive && it.asBoolean } == true, text.take(20000))
+        output(result.get("isError")?.let { it.isJsonPrimitive && it.asJsonPrimitive.isBoolean && it.asBoolean } == true, text.take(20000))
     }
 
     private fun output(isError: Boolean, text: String): String = gson.toJson(JsonObject().apply {
@@ -199,7 +209,8 @@ class McpRemote @Inject constructor(
         client.protocolVersion = PROTOCOL
         client.notify("notifications/initialized", connectHttp)
         val list = client.request("tools/list", JsonObject(), connectHttp)
-        client.tools = list.getAsJsonArray("tools")?.mapNotNull { it.takeIf { e -> e.isJsonObject }?.asJsonObject }.orEmpty()
+        client.tools = list.get("tools")?.takeIf { it.isJsonArray }?.asJsonArray
+            ?.mapNotNull { it.takeIf { e -> e.isJsonObject }?.asJsonObject }.orEmpty()
         return client
     }
 
@@ -226,8 +237,11 @@ class McpRemote @Inject constructor(
                 .build()
             http.newCall(request).execute().use { response ->
                 response.header("mcp-session-id")?.let { sessionId = it }
-                val text = response.body?.string().orEmpty()
                 if (!response.isSuccessful && response.code != 202) throw IllegalStateException("HTTP ${response.code}")
+                val length = response.body?.contentLength() ?: 0
+                if (length > MAX_RESPONSE_BYTES) throw IllegalStateException("response too large")
+                val text = response.peekBody(MAX_RESPONSE_BYTES + 1).string()
+                if (text.length > MAX_RESPONSE_BYTES) throw IllegalStateException("response too large")
                 return text to (response.header("content-type")?.substringBefore(';')?.trim().orEmpty())
             }
         }
@@ -249,10 +263,10 @@ class McpRemote @Inject constructor(
                 listOfNotNull(text.takeIf { it.isNotBlank() }?.let { JsonParser.parseString(it) })
             }
             val reply = messages.mapNotNull { it.takeIf { m -> m.isJsonObject }?.asJsonObject }
-                .firstOrNull { it.get("id")?.let { i -> i.isJsonPrimitive && i.asInt == id } == true }
+                .firstOrNull { m -> m.get("id")?.let { i -> i.isJsonPrimitive && i.asJsonPrimitive.isNumber && i.asInt == id } == true }
                 ?: throw IllegalStateException("no reply to $method")
-            reply.getAsJsonObject("error")?.let { throw IllegalStateException(it.get("message")?.asString ?: "error") }
-            return reply.getAsJsonObject("result") ?: JsonObject()
+            reply.get("error")?.takeIf { it.isJsonObject }?.asJsonObject?.let { throw IllegalStateException(it.string("message") ?: "error") }
+            return reply.get("result")?.takeIf { it.isJsonObject }?.asJsonObject ?: JsonObject()
         }
 
         fun notify(method: String, http: OkHttpClient) {
@@ -271,5 +285,11 @@ class McpRemote @Inject constructor(
         private const val MAX_TOOLS = 30
         private const val CONNECT_SECONDS = 10L
         private const val CALL_SECONDS = 60L
+        private const val MAX_SCHEMA_CHARS = 8000
+        private const val MAX_RESPONSE_BYTES = 5L * 1024 * 1024
     }
 }
+
+/** A string member, or null if it's missing or not a string. */
+private fun JsonObject.string(name: String): String? =
+    get(name)?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isString }?.asString

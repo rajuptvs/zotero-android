@@ -239,6 +239,72 @@ class DesktopApprover:
         for op in self.pending():
             self.decide(op["id"], False)
 
+    def clients(self):
+        return self.desktop._post("/zotero-ai/test/eval", {"code": "return ZoteroAI.McpClients.list();"})["result"]
+
+
+class StandaloneApprover:
+    """Plays the human for the standalone server, through its admin API (password-protected)."""
+
+    def __init__(self, base, password):
+        self.base = urllib.parse.urlparse(base)
+        self.url = base.rstrip("/") + "/mcp"
+        self.cookie, self.csrf = None, ""
+        status, headers, body = self._req("/admin/api/login", {"password": password})
+        if status != 200:
+            raise RuntimeError(f"standalone login failed: {status}")
+        self.cookie = headers.get("Set-Cookie", "").split(";")[0]
+        self.csrf = body["csrf"]
+
+    def _req(self, path, body=None):
+        conn = http.client.HTTPConnection(self.base.hostname, self.base.port, timeout=60)
+        h = {"Content-Type": "application/json", "X-CSRF-Token": self.csrf}
+        if self.cookie:
+            h["Cookie"] = self.cookie
+        conn.request("POST" if body is not None else "GET", path, body=json.dumps(body) if body is not None else None, headers=h)
+        resp = conn.getresponse()
+        data = resp.read().decode()
+        headers = dict(resp.getheaders())
+        conn.close()
+        return resp.status, headers, json.loads(data) if data else None
+
+    def _post(self, path, body):
+        return self._req(path, body)[2]
+
+    def client(self, name, scope, enable=True):
+        if enable:
+            self._post("/admin/api/enabled", {"on": True})
+        created = self._post("/admin/api/clients", {"name": name, "scope": scope})
+        return {"url": self.url, "created": created}
+
+    def setup(self, data):
+        if "enable" in data:
+            self._post("/admin/api/enabled", {"on": data["enable"]})
+        if data.get("revoke"):
+            self._post("/admin/api/revoke", {"id": data["revoke"]})
+        if data.get("autoApprove"):
+            self._post("/admin/api/auto-approve", data["autoApprove"])
+        return {"url": self.url}
+
+    def pending(self):
+        return self._req("/admin/api/state")[2]["pending"]
+
+    def decide(self, op_id, approved):
+        return self._post("/admin/api/decide", {"id": op_id, "approved": approved})["decided"]
+
+    def timing(self, **t):
+        return self._post("/admin/api/timing", t)
+
+    def restart(self):
+        return self._post("/admin/api/restart", {})
+
+    def decline_all(self):
+        for op in self.pending():
+            self.decide(op["id"], False)
+
+    def clients(self):
+        return self._req("/admin/api/state")[2]["clients"]
+
 
 def spec_mcp_tools(spec_tools, scope):
     """ai/spec/mcp.md catalog derivation, computed independently of the server."""
@@ -257,9 +323,12 @@ def spec_mcp_tools(spec_tools, scope):
     return out
 
 
-def mcp_checks(results, android, desktop, spec_tools, write_key, xpi_path):
-    print("== mcp: read-only endpoint")
-    human = DesktopApprover(desktop)
+def mcp_checks(results, android, desktop, spec_tools, write_key, xpi_path, human=None, host="desktop"):
+    """Checks one MCP host against ai/spec/mcp.md part A. `host` is "desktop" (the plugin) or
+    "standalone" (the Web API server); `human` decides approvals on that host."""
+    label = "mcp" if host == "desktop" else "standalone"
+    print(f"== {label}: read-only endpoint")
+    human = human or DesktopApprover(desktop)
     human.timing(expireMs=300000, keepMs=600000, replayMs=120000)
     human.decline_all()
     setup = human.client("conformance writer", "write")
@@ -270,12 +339,12 @@ def mcp_checks(results, android, desktop, spec_tools, write_key, xpi_path):
     clients = [setup["created"]["client"]["id"]]
 
     init = writer.rpc("initialize", {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "conformance", "version": "1"}})
-    check(results, "mcp initialize", init["protocolVersion"] == "2025-06-18" and init["serverInfo"]["name"] == "zotero-ai", json.dumps(init)[:200])
+    check(results, f"{label} initialize", init["protocolVersion"] == "2025-06-18" and init["serverInfo"]["name"] == "zotero-ai", json.dumps(init)[:200])
     init = writer.rpc("initialize", {"protocolVersion": "1999-01-01", "capabilities": {}})
-    check(results, "mcp initialize answers an unknown version with a supported one", init["protocolVersion"] == "2025-11-25")
+    check(results, f"{label} initialize answers an unknown version with a supported one", init["protocolVersion"] == "2025-11-25")
     for scope, client in (("write", writer), ("read", reader)):
         listed = client.rpc("tools/list")["tools"]
-        check(results, f"mcp tools/list ({scope}) is derived from tools.json", listed == spec_mcp_tools(spec_tools, scope),
+        check(results, f"{label} tools/list ({scope}) is derived from tools.json", listed == spec_mcp_tools(spec_tools, scope),
               "; ".join(diff(listed, spec_mcp_tools(spec_tools, scope))[:3]))
 
     collections = desktop.tool("zotero_get_collections", {})["collections"]
@@ -283,88 +352,91 @@ def mcp_checks(results, android, desktop, spec_tools, write_key, xpi_path):
     for name, args in calls:
         m, d, a = writer.tool(name, args), desktop.tool(name, args), android.tool(name, args)
         problems = diff(m, d) + diff(normalize(m), normalize(a))
-        check(results, f"mcp {name} {json.dumps(args)[:60]} = desktop = android", not problems, "; ".join(problems[:3]))
+        check(results, f"{label} {name} {json.dumps(args)[:60]} = desktop = android", not problems, "; ".join(problems[:3]))
     full = writer.tool("zotero_search_items", {"query": "attention", "tag": None, "collection_key": None, "limit": None})
     omitted = writer.tool("zotero_search_items", {"query": "attention"})
-    check(results, "mcp omitted nullables = null", full == omitted)
+    check(results, f"{label} omitted nullables = null", full == omitted)
     bad, is_error = writer.call("zotero_get_tags", {"limit": 2.5})
-    check(results, "mcp invalid arguments are a tool error", is_error and bad.get("error") == "invalid_argument", json.dumps(bad))
+    check(results, f"{label} invalid arguments are a tool error", is_error and bad.get("error") == "invalid_argument", json.dumps(bad))
 
     status, _, _ = writer.raw({"jsonrpc": "2.0", "id": 1, "method": "ping"}, auth=False)
-    check(results, "mcp no token → 401", status == 401, str(status))
+    check(results, f"{label} no token → 401", status == 401, str(status))
     status, _, _ = Mcp(url, "zai_wrong").raw({"jsonrpc": "2.0", "id": 1, "method": "ping"})
-    check(results, "mcp wrong token → 401", status == 401, str(status))
+    check(results, f"{label} wrong token → 401", status == 401, str(status))
     gone = human.client("conformance revoked", "read")
     human.setup({"revoke": gone["created"]["client"]["id"]})
     status, _, _ = Mcp(url, gone["created"]["token"]).raw({"jsonrpc": "2.0", "id": 1, "method": "ping"})
-    check(results, "mcp revoked token → 401", status == 401, str(status))
+    check(results, f"{label} revoked token → 401", status == 401, str(status))
     status, _, _ = writer.raw({"jsonrpc": "2.0", "id": 1, "method": "ping"}, headers={"Origin": "https://evil.example"})
-    check(results, "mcp Origin → dropped by Zotero", status is None, str(status))
+    check(results, f"{label} Origin refused", status is None if host == "desktop" else status == 403, str(status))
     status, _, _ = writer.raw({"jsonrpc": "2.0", "id": 1, "method": "ping"},
                               headers={"Origin": "https://evil.example", "Zotero-Allowed-Request": "1"})
-    check(results, "mcp Origin + Zotero-Allowed-Request → 403", status == 403, str(status))
+    check(results, f"{label} Origin + Zotero-Allowed-Request → 403", status == 403, str(status))
     status, headers, _ = writer.raw(method="GET")
-    check(results, "mcp GET → 405", status == 405 and headers.get("Allow") == "POST", str(status))
+    check(results, f"{label} GET → 405", status == 405 and headers.get("Allow") == "POST", str(status))
     status, _, _ = writer.raw({"jsonrpc": "2.0", "method": "notifications/initialized"})
-    check(results, "mcp notification → 202", status == 202, str(status))
+    check(results, f"{label} notification → 202", status == 202, str(status))
     status, _, reply = writer.raw({"jsonrpc": "2.0", "id": 9, "method": "resources/list"})
-    check(results, "mcp unknown method → -32601", status == 200 and reply["error"]["code"] == -32601, str(reply))
+    check(results, f"{label} unknown method → -32601", status == 200 and reply["error"]["code"] == -32601, str(reply))
     status, _, reply = writer.raw([{"jsonrpc": "2.0", "id": 1, "method": "ping"}])
-    check(results, "mcp batch → -32600", status == 400 and reply["error"]["code"] == -32600, str(reply))
+    check(results, f"{label} batch → -32600", status == 400 and reply["error"]["code"] == -32600, str(reply))
     status, _, _ = writer.raw('{"jsonrpc":"2.0","id":1,"method":"ping"}', headers={"Content-Type": "text/plain"})
-    check(results, "mcp non-JSON content type → 415", status == 415, str(status))
+    check(results, f"{label} non-JSON content type → 415", status == 415, str(status))
     status, _, _ = writer.raw({"jsonrpc": "2.0", "id": 1, "method": "ping"}, headers={"MCP-Protocol-Version": "1999-01-01"})
-    check(results, "mcp unsupported protocol header → 400", status == 400, str(status))
+    check(results, f"{label} unsupported protocol header → 400", status == 400, str(status))
 
-    with zipfile.ZipFile(xpi_path) as z:
-        leaked = [n for n in z.namelist() if b"/zotero-ai/test/" in z.read(n)]
-    check(results, "release xpi has no test endpoints", not leaked, str(leaked))
+    if host == "desktop":
+        with zipfile.ZipFile(xpi_path) as z:
+            leaked = [n for n in z.namelist() if b"/zotero-ai/test/" in z.read(n)]
+        check(results, "release xpi has no test endpoints", not leaked, str(leaked))
+        desktop.eval("Zotero.Debug.setStore(true); Zotero.Prefs.set('debug.level', 5); return true;")
+        writer.rpc("ping")
+        # The token goes into the code only to compare; the logged copy of this request is redacted too.
+        log = desktop.eval("let s = Zotero.Debug.get ? await Zotero.Debug.get() : ''; Zotero.Debug.setStore(false); "
+                           f"return {{ redacted: s.includes('Bearer zai_[redacted]'), leaked: s.includes({json.dumps(writer.token)}) }};")
+        check(results, f"{label} token is redacted in Zotero's debug log", log["redacted"] and not log["leaked"], json.dumps(log))
 
-    log = desktop.eval("Zotero.Debug.setStore(true); Zotero.Prefs.set('debug.level', 5); return true;")
-    writer.rpc("ping")
-    # The token goes into the code only to compare; the logged copy of this request is redacted too.
-    log = desktop.eval("let s = Zotero.Debug.get ? await Zotero.Debug.get() : ''; Zotero.Debug.setStore(false); "
-                       f"return {{ redacted: s.includes('Bearer zai_[redacted]'), leaked: s.includes({json.dumps(writer.token)}) }};")
-    check(results, "mcp token is redacted in Zotero's debug log", log["redacted"] and not log["leaked"], json.dumps(log))
+    # Library state as the host under test sees it.
+    read = desktop.tool if host == "desktop" else writer.tool
 
-    print("== mcp: writes with approval")
+    print(f"== {label}: writes with approval")
     tag = "zz-ai-mcp-" + "".join(random.choices(string.ascii_lowercase, k=5))
     add_args = {"item_keys": [write_key], "add_tags": [tag], "remove_tags": []}
     t0 = time.time()
     pending = writer.tool("zotero_batch_update_tags", add_args)
     held = time.time() - t0
-    check(results, "mcp write returns pending_approval after holding ≤ 20 s",
+    check(results, f"{label} write returns pending_approval after holding ≤ 20 s",
           pending.get("status") == "pending_approval" and pending.get("approval_id", "").startswith("op_") and held < 25, f"{held:.1f}s {pending}")
-    tags = desktop.tool("zotero_get_item_metadata", {"item_key": write_key})["tags"]
-    check(results, "mcp pending write changed nothing", tag not in tags)
-    check(results, "mcp pending description = android = desktop describe",
+    tags = read("zotero_get_item_metadata", {"item_key": write_key})["tags"]
+    check(results, f"{label} pending write changed nothing", tag not in tags)
+    check(results, f"{label} pending description = android = desktop describe",
           pending.get("description") == android.describe("zotero_batch_update_tags", add_args)["description"]
           == desktop.describe("zotero_batch_update_tags", add_args)["description"], pending.get("description"))
     again = writer.tool("zotero_batch_update_tags", add_args)
-    check(results, "mcp duplicate call while pending joins it",
+    check(results, f"{label} duplicate call while pending joins it",
           again.get("approval_id") == pending["approval_id"] and len([p for p in human.pending() if p["tool"] == "zotero_batch_update_tags"]) == 1)
     foreign, _ = other.call("zotero_await_approval", {"approval_id": pending["approval_id"]})
-    check(results, "mcp another client's approval_id → not_found", foreign.get("error") == "not_found", json.dumps(foreign))
+    check(results, f"{label} another client's approval_id → not_found", foreign.get("error") == "not_found", json.dumps(foreign))
     human.decide(pending["approval_id"], True)
     done = writer.tool("zotero_await_approval", {"approval_id": pending["approval_id"]})
-    check(results, "mcp approved write = desktop result shape", done == {"updated": [write_key]}, json.dumps(done))
-    check(results, "mcp await returns the stored result again",
+    check(results, f"{label} approved write = desktop result shape", done == {"updated": [write_key]}, json.dumps(done))
+    check(results, f"{label} await returns the stored result again",
           writer.tool("zotero_await_approval", {"approval_id": pending["approval_id"]}) == done)
     replay = writer.tool("zotero_batch_update_tags", add_args)
-    check(results, "mcp retry right after success replays the result (no second write)",
+    check(results, f"{label} retry right after success replays the result (no second write)",
           replay == done and not [p for p in human.pending() if p["tool"] == "zotero_batch_update_tags"], json.dumps(replay))
     desktop.sync()
     android.sync()
-    check(results, "mcp approved change is on Android after sync",
+    check(results, f"{label} approved change is on Android after sync",
           tag in android.tool("zotero_get_item_metadata", {"item_key": write_key})["tags"])
 
     remove_args = {"item_keys": [write_key], "add_tags": [], "remove_tags": [tag]}
     pending = writer.tool("zotero_batch_update_tags", remove_args)
     human.decide(pending["approval_id"], False)
     declined = writer.tool("zotero_await_approval", {"approval_id": pending["approval_id"]})
-    check(results, "mcp decline = the chat's decline", json.dumps(declined) == json.dumps({"error": "declined", "message": "The user declined this change."}), json.dumps(declined))
+    check(results, f"{label} decline = the chat's decline", json.dumps(declined) == json.dumps({"error": "declined", "message": "The user declined this change."}), json.dumps(declined))
     retry = writer.tool("zotero_batch_update_tags", remove_args)
-    check(results, "mcp retry after a decline asks again", retry.get("status") == "pending_approval" and retry.get("approval_id") != pending["approval_id"])
+    check(results, f"{label} retry after a decline asks again", retry.get("status") == "pending_approval" and retry.get("approval_id") != pending["approval_id"])
     human.decide(retry["approval_id"], True)
     writer.tool("zotero_await_approval", {"approval_id": retry["approval_id"]})
 
@@ -372,7 +444,7 @@ def mcp_checks(results, android, desktop, spec_tools, write_key, xpi_path):
     b = writer.tool("zotero_create_collection", {"name": f"zz-ai-mcp B {tag}", "parent_collection_key": None})
     human.decide(a["approval_id"], False)
     still = writer.tool("zotero_await_approval", {"approval_id": b["approval_id"]})
-    check(results, "mcp deciding A leaves B pending", still.get("status") == "pending_approval", json.dumps(still))
+    check(results, f"{label} deciding A leaves B pending", still.get("status") == "pending_approval", json.dumps(still))
     human.decide(b["approval_id"], False)
 
     note_args = {"parent_item_key": write_key, "title": f"zz-ai-mcp note {tag}", "content": "From **MCP** — “quotes” too.", "tags": []}
@@ -380,22 +452,22 @@ def mcp_checks(results, android, desktop, spec_tools, write_key, xpi_path):
     human.decide(pending["approval_id"], True)
     first = writer.tool("zotero_await_approval", {"approval_id": pending["approval_id"]})
     lost = writer.tool("zotero_create_note", note_args)  # the agent never saw `first` and calls again
-    notes = desktop.tool("zotero_get_notes", {"item_key": write_key, "query": None, "limit": None})["notes"]
+    notes = read("zotero_get_notes", {"item_key": write_key, "query": None, "limit": None})["notes"]
     made = [n for n in notes if n["title"] == note_args["title"]]
-    check(results, "mcp lost response + retry creates one note", lost == first and len(made) == 1, f"{lost} {len(made)}")
+    check(results, f"{label} lost response + retry creates one note", lost == first and len(made) == 1, f"{lost} {len(made)}")
 
     blocked, is_error = reader.call("zotero_batch_update_tags", add_args)
-    check(results, "mcp read-only client can't request writes",
+    check(results, f"{label} read-only client can't request writes",
           is_error and blocked == {"error": "declined", "message": "This connection is read-only."} and not human.pending(), json.dumps(blocked))
     blocked, _ = reader.call("zotero_await_approval", {"approval_id": "op_x"})
-    check(results, "mcp read-only client can't await approvals", blocked.get("message") == "This connection is read-only.")
+    check(results, f"{label} read-only client can't await approvals", blocked.get("message") == "This connection is read-only.")
 
     writer_id = setup["created"]["client"]["id"]
     human.setup({"autoApprove": {"id": writer_id, "on": True}})
     auto = writer.tool("zotero_batch_update_tags", {"item_keys": [write_key], "add_tags": [tag + "-auto"], "remove_tags": []})
-    check(results, "mcp auto-approve runs a tag change at once", auto == {"updated": [write_key]}, json.dumps(auto))
+    check(results, f"{label} auto-approve runs a tag change at once", auto == {"updated": [write_key]}, json.dumps(auto))
     trash = writer.tool("zotero_trash_items", {"item_keys": [write_key]})
-    check(results, "mcp trash still asks with auto-approve on", trash.get("status") == "pending_approval", json.dumps(trash))
+    check(results, f"{label} trash still asks with auto-approve on", trash.get("status") == "pending_approval", json.dumps(trash))
     human.decide(trash["approval_id"], False)
     human.setup({"autoApprove": {"id": writer_id, "on": False}})
     human.decide(writer.tool("zotero_batch_update_tags", {"item_keys": [write_key], "add_tags": [], "remove_tags": [tag + "-auto"]})["approval_id"], True)
@@ -416,32 +488,31 @@ def mcp_checks(results, android, desktop, spec_tools, write_key, xpi_path):
     late = human.decide(op_id, True) if op_id else None
     expired_msg = {"error": "declined", "message": "Nobody answered the approval request in Zotero."}
     awaited = writer.tool("zotero_await_approval", {"approval_id": op_id}) if op_id else None
-    check(results, "mcp an expired request ignores a late decision",
+    check(results, f"{label} an expired request ignores a late decision",
           box.get("r") == expired_msg and late is False and awaited == expired_msg, f"{box.get('r')} {late} {awaited}")
     human.timing(expireMs=300000)
 
     opened = [writer.tool("zotero_create_collection", {"name": f"zz-ai-mcp limit {i} {tag}", "parent_collection_key": None}) for i in range(5)]
     over = writer.tool("zotero_create_collection", {"name": f"zz-ai-mcp limit 5 {tag}", "parent_collection_key": None})
-    check(results, "mcp at most 5 open requests per client", over.get("error") == "unavailable" and all(o.get("status") == "pending_approval" for o in opened), json.dumps(over))
+    check(results, f"{label} at most 5 open requests per client", over.get("error") == "unavailable" and all(o.get("status") == "pending_approval" for o in opened), json.dumps(over))
     human.decline_all()
 
-    for label, action in (("revoke", lambda cid: human.setup({"revoke": cid})),
+    for how, action in (("revoke", lambda cid: human.setup({"revoke": cid})),
                           ("disable", lambda cid: human.setup({"enable": False})),
                           ("shutdown", lambda cid: human.restart())):
-        temp = human.client(f"conformance {label}", "write")
+        temp = human.client(f"conformance {how}", "write")
         t = Mcp(url, temp["created"]["token"])
-        op = t.tool("zotero_create_collection", {"name": f"zz-ai-mcp {label} {tag}", "parent_collection_key": None})
+        op = t.tool("zotero_create_collection", {"name": f"zz-ai-mcp {how} {tag}", "parent_collection_key": None})
         action(temp["created"]["client"]["id"])
         human.setup({"enable": True})
         gone = not any(p["id"] == op.get("approval_id") for p in human.pending())
-        check(results, f"mcp {label} declines open requests", op.get("status") == "pending_approval" and gone)
+        check(results, f"{label} {how} declines open requests", op.get("status") == "pending_approval" and gone)
         human.setup({"revoke": temp["created"]["client"]["id"]})
 
-    print("== mcp: cleanup")
+    print(f"== {label}: cleanup")
     human.decline_all()
-    tags = desktop.tool("zotero_get_item_metadata", {"item_key": write_key})["tags"]
     note_keys = [n["key"] for n in made]
-    for cid in [writer_id, *[c["id"] for c in desktop._post("/zotero-ai/test/eval", {"code": "return ZoteroAI.McpClients.list().filter(c => c.name.startsWith('conformance'));"})["result"]]]:
+    for cid in [writer_id, *[c["id"] for c in human.clients() if c["name"].startswith("conformance")]]:
         human.setup({"revoke": cid})
     return note_keys
 
@@ -472,16 +543,16 @@ def mcp_client_checks(results, android, desktop, serial):
             client.mcpremote({"action": "set", "servers": servers})
         a, d = android.mcpremote({"action": "tools"}), desktop.mcpremote({"action": "tools"})
         problems = diff(a, d)
-        check(results, "mcp client: same tools, availability and approval rule on both", not problems, "; ".join(problems[:4]))
+        check(results, f"mcp client: same tools, availability and approval rule on both", not problems, "; ".join(problems[:4]))
         names = [t["name"] for t in d["tools"]]
         expected = [mcp_function_name(s["name"], t["name"]) for s in servers[:2] for t in TOOLS]
-        check(results, "mcp client: tool names follow the spec", names == expected, f"{names} != {expected}")
-        check(results, "mcp client: unreachable server reported, disabled one skipped", d["unavailable"] == ["Down"], json.dumps(d["unavailable"]))
+        check(results, f"mcp client: tool names follow the spec", names == expected, f"{names} != {expected}")
+        check(results, f"mcp client: unreachable server reported, disabled one skipped", d["unavailable"] == ["Down"], json.dumps(d["unavailable"]))
         weird = next(t for t in d["tools"] if t["name"].endswith("weird_name_v2"))
-        check(results, "mcp client: long description cut, missing schema replaced",
+        check(results, f"mcp client: long description cut, missing schema replaced",
               len(weird["description"]) == 500 and weird["parameters"] == {"type": "object", "properties": {}} and weird["strict"] is False)
         echo1, echo2 = mcp_function_name("Fixture JSON", "echo"), mcp_function_name("Fixture SSE!", "echo")
-        check(results, "mcp client: read-only tools skip asking only where allowed",
+        check(results, f"mcp client: read-only tools skip asking only where allowed",
               d["shouldAsk"][echo1] is False and d["shouldAsk"][echo2] is True
               and d["shouldAsk"][mcp_function_name("Fixture JSON", "save_note")] is True)
         long_args = {"text": "x" * 400, "b": "<tag> & \"quotes\" — ünïcode"}
@@ -489,14 +560,15 @@ def mcp_client_checks(results, android, desktop, serial):
             da, dd = android.mcpremote({"action": "describe", "name": name, "args": args}), desktop.mcpremote({"action": "describe", "name": name, "args": args})
             check(results, f"mcp client: approval text equal ({name})", da == dd, f"{da} != {dd}")
         dd = desktop.mcpremote({"action": "describe", "name": echo2, "args": long_args})["description"]
-        check(results, "mcp client: approval text cut at 300 characters",
-              dd.startswith("Run echo on Fixture SSE!: {\"b\":") and dd.endswith("…") and len(dd) == len("Run echo on Fixture SSE!: ") + 301, dd[:80])
+        full = len(json.dumps(dict(sorted(long_args.items())), ensure_ascii=False, separators=(",", ":")))
+        check(results, f"mcp client: approval text cut at 300 characters",
+              dd.startswith("Run echo on Fixture SSE!: {\"b\":") and dd.endswith(f" … (+{full - 300} more characters)"), dd[-60:])
         for name, args in ((echo1, {"text": "<b>&'\" ünï"}), (echo2, {"text": "via SSE"}),
                            (mcp_function_name("Fixture JSON", "picture"), {}), (mcp_function_name("Fixture JSON", "broken"), {})):
             oa = android.mcpremote({"action": "call", "name": name, "args": args})["output"]
             od = desktop.mcpremote({"action": "call", "name": name, "args": args})["output"]
             check(results, f"mcp client: call output equal ({name})", oa == od, f"{oa} != {od}")
-        check(results, "mcp client: output shapes",
+        check(results, f"mcp client: output shapes",
               json.loads(desktop.mcpremote({"action": "call", "name": mcp_function_name("Fixture JSON", "picture"), "args": {}})["output"])
               == {"isError": False, "text": "[image omitted]\na picture"}
               and json.loads(desktop.mcpremote({"action": "call", "name": mcp_function_name("Fixture JSON", "broken"), "args": {}})["output"])
@@ -549,6 +621,8 @@ def main():
                     help="per-launch secret written by desktop-plugin/scripts/dev-zotero.sh")
     ap.add_argument("--skip-writes", action="store_true")
     ap.add_argument("--no-mcp", dest="mcp", action="store_false", help="skip the MCP server checks")
+    ap.add_argument("--standalone", help="also check the standalone MCP server at this base URL, e.g. http://127.0.0.1:8770")
+    ap.add_argument("--standalone-password", default=os.environ.get("ZOTERO_AI_MCP_ADMIN_PASSWORD"))
     opts = ap.parse_args()
     android, desktop = Android(opts.serial), Desktop(opts.desktop, opts.desktop_token_file)
     results = []
@@ -620,6 +694,15 @@ def main():
             xpi = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "desktop-plugin", "dist", "zotero-ai.xpi")
             made = mcp_checks(results, android, desktop, spec_tools, item[0]["key"], xpi)
             desktop.tool("zotero_trash_items", {"item_keys": made})
+            if opts.standalone:
+                # Same contract, other host: the standalone server on the Zotero Web API.
+                desktop.sync()
+                android.sync()
+                human = StandaloneApprover(opts.standalone, opts.standalone_password)
+                made = mcp_checks(results, android, desktop, spec_tools, item[0]["key"], xpi, human=human, host="standalone")
+                desktop.sync()
+                desktop.tool("zotero_trash_items", {"item_keys": made})
+                desktop.sync()
 
     if not opts.skip_writes:
         suffix = "".join(random.choices(string.ascii_lowercase, k=5))
@@ -631,6 +714,9 @@ def main():
         else:
             key = item[0]["key"]
             print(f"== writes on {key}")
+            # Earlier sections (MCP hosts) changed this item; start from the same version everywhere.
+            desktop.sync()
+            android.sync()
             coll = android.tool("zotero_create_collection", {"name": f"zz-ai-conf {suffix}", "parent_collection_key": None})
             check(results, "android create_collection", "key" in coll, json.dumps(coll))
             r = android.tool("zotero_batch_update_tags", {"item_keys": [key], "add_tags": [tag_a], "remove_tags": []})

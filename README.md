@@ -15,7 +15,7 @@ Everything else is the stock Zotero app. Work happens on the [`ai-chat-panel`](h
 
 **Chat next to the document**
 - An ✨ **Ask AI** button in the reader toolbar opens the panel. The PDF stays visible: side by side on wide screens (unfolded foldables, tablets), PDF on top and chat below on a phone. The divider can be dragged.
-- Answers stream in and are rendered as Markdown (lists, bold, code, tables, typeset math), with a status line (*Reading the document… / Thinking… / Writing the answer…*) and a Stop button.
+- Answers stream in and are rendered as Markdown (lists, bold, highlighted code, tables, typeset math), with a status line (*Reading the document… / Thinking… / Writing the answer…*) and a Stop button.
 - The model is told what you're reading: title, authors, venue, DOI, tags, abstract, the full text of the document and the page you're on.
 
 **Select to chat**
@@ -112,6 +112,20 @@ The server lives on Zotero's own local port (`127.0.0.1` only) and refuses reque
 Clients that only speak stdio can use `npx mcp-remote <url> --header "Authorization: Bearer …"`.
 The protocol and guarantees are in [`ai/spec/mcp.md`](ai/spec/mcp.md).
 
+**With Zotero closed:** [`mcp-server/`](mcp-server) is a small standalone server (Python, no
+dependencies) that serves the same tools from the Zotero Web API, on this computer or a home server.
+Changes wait for your approval on its password-protected `/admin` page, which also works from a
+phone browser if you reach the server over HTTPS. The same conformance checks run against it.
+
+### Your MCP servers in the chat panels
+
+Sign in with ChatGPT doesn't allow OpenAI-hosted MCP tools, but it does allow tools the app runs
+itself. So both panels can use **your own MCP servers**: add them under **MCP servers…** in the
+panel menu (https, or http on the same device, with an optional token). Their tools are offered to
+the model next to the Zotero ones. Every call asks first (you can let a server's read-only tools run
+without asking), and while other services' tools are in play, changes to your Zotero library always
+ask, even with "Approve changes automatically" on. Rules: [`ai/spec/mcp-client.md`](ai/spec/mcp-client.md).
+
 ## The same on every device
 
 Both clients are built from one spec in [`ai/spec/`](ai/spec): the tool definitions
@@ -125,9 +139,11 @@ synced library:
 - conversation notes (including ones the desktop note editor has re-saved) are read back identically, and Markdown math becomes the same note markup;
 - changes made on one device are visible on the other after a sync;
 - both clients apply the same approval rule to every tool;
-- the MCP server lists exactly the spec's tools and returns the same results as the desktop and Android clients, and its approvals, retries, expiry, limits and token handling behave as `mcp.md` says.
+- the MCP server lists exactly the spec's tools and returns the same results as the desktop and Android clients, and its approvals, retries, expiry, limits and token handling behave as `mcp.md` says — for both the desktop plugin and the standalone server;
+- both panels, as MCP clients of a test server, offer the same tools, show the same approval text and pass the same results to the model;
+- streamed answers split into the same blocks on both clients (`ai/spec/blocks.json`, Node and JUnit tests).
 
-All 122 checks pass. Conversations were also tested by hand across devices: library chat started on desktop, continued on the phone (change approved), then continued on desktop (change declined), and synced back; reader chat about the same paper continued back and forth.
+All 193 checks pass, alongside the Node and JUnit tests for the block splitter. Conversations were also tested by hand across devices: library chat started on desktop, continued on the phone (change approved), then continued on desktop (change declined), and synced back; reader chat about the same paper continued back and forth.
 
 ### Compared with Zotero Agent (zotero-mcp's chat plugin)
 
@@ -188,6 +204,8 @@ No PSPDFKit key is needed: PDFs, EPUBs and snapshots all open in Zotero's web-ba
 | Library screen integration | `screens/allitems/` |
 | Desktop plugin | `desktop-plugin/src/content/` |
 | MCP server, approvals | `desktop-plugin/src/content/{mcpServer,mcpClients,approvals,approvalSheet,connectDialog}.js`, `ai/spec/mcp.md` |
+| Standalone MCP server | `mcp-server/` |
+| Panels as MCP clients | `desktop-plugin/src/content/{mcpRemote,mcpServersDialog}.js`, `app/…/ai/mcp/`, `ai/spec/mcp-client.md` |
 
 ---
 

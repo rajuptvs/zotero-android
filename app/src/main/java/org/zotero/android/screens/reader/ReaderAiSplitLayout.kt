@@ -126,8 +126,10 @@ private fun SplitLayout(
             return@Layout layout(width, height) { readerPlaceable.place(0, 0) }
         }
         if (wide) {
+            // The dp check and px rounding can differ by a pixel; never let max fall below min.
+            val maxPanelWidth = (width - handleThickness - minReaderWidth).coerceAtLeast(minPanelWidth)
             val panelWidth = ((width - handleThickness) * sideFraction).roundToInt()
-                .coerceIn(minPanelWidth, width - handleThickness - minReaderWidth)
+                .coerceIn(minPanelWidth, maxPanelWidth)
             val readerWidth = width - handleThickness - panelWidth
             val readerPlaceable = readerMeasurables.first().measure(Constraints.fixed(readerWidth, height))
             val handle = handleMeasurables.firstOrNull()?.measure(Constraints.fixed(handleThickness, height))
